@@ -169,7 +169,7 @@ def train(smiles_list):
         model=autoencoder,
         train_loader=train_loader,
         val_loader=val_loader,
-        lr=1e-4,
+        lr=9e-5,
         device='cuda' if torch.cuda.is_available() else 'cpu'
     )
 

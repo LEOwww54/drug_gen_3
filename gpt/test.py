@@ -494,7 +494,7 @@ def train(data_loader, epochs, vs, lr, model = None, p_type='', conditional=['un
         for epoch in range(epochs):
             X.append(epoch)
             start_time = time.time()
-            train_loss = train_step(model, train_data, optimizer, criterion, CLIP, print_every=1000, conditional=conditional)
+            train_loss = train_step(model, train_data, optimizer, criterion, CLIP, print_every=100, conditional=conditional)
             Y.append(train_loss)
             end_time = time.time()
 

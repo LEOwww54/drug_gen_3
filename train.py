@@ -20,7 +20,7 @@ def train_fragGPT_ZINC_250K_prop_Riemmanian(epoch, s, s1):
         import gpt.tokenizer as tokenizer_gpt
         tokenizer_gpt.get_new_tokenizer(source='ZINC_250K')
     data_loaders, tokenizer__ = get_frag_default_dataloader_ZINC_250K_pkl('gpt/vocab/frag_tokenizer_ZINC_250K.json', s1)
-    lr = 1e-4
+    lr = 9e-5
 
 
     gpt.train(data_loaders, epoch, tokenizer__.get_vocab_size(), lr, p_type='Riemannian', conditional=['prop'])
@@ -51,14 +51,14 @@ def train_fragGPT_ZINC_refined_prop_Riemmanian(epoch, s, s1):
         import gpt.tokenizer as tokenizer_gpt
         tokenizer_gpt.get_new_tokenizer(source='ZINC_refined')
     data_loaders, tokenizer__ = get_frag_default_dataloader_ZINC_refined_pkl('gpt/vocab/frag_tokenizer_ZINC_refined.json', s1)
-    lr = 1e-4
+    lr = 9e-5
 
     gpt.train(data_loaders, epoch, tokenizer__.get_vocab_size(), lr, p_type='Riemannian', conditional=['prop'])
 
 if __name__ == '__main__':
     ## md_test()
     # train_fragGPT_chembl_unconditional_lora_1(2, True, False)
-    train_fragGPT_ZINC_refined_prop_Riemmanian(4, False, False)
+    train_fragGPT_ZINC_250K_prop_Riemmanian(20, False, False)
 
     # finetune_alot_ZINC_geom(epoch=8, s=True)
 

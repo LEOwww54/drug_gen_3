@@ -106,24 +106,15 @@ def analyze_generated_molecules(train_smiles: List[str],
 # ============ 使用示例 ============
 if __name__ == "__main__":
     # 示例数据
-    train_smiles = [
-        "CC(=O)OC1=CC=CC=C1C(=O)O",  # 阿司匹林
-        "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",  # 咖啡因
-        "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O",  # 布洛芬
-        "CC1=C(C(=O)NC2=CC=CC=C2)C=CC=C1",  # 扑热息痛
-        "invalid_smiles_string",  # 无效分子
-    ]
+    from ZINC_refined import dataloader
+    train_smiles = dataloader.data_from_ZINC_refined(0)[0]['train']
 
-    generated_smiles = [
-        "CC(=O)OC1=CC=CC=C1C(=O)O",  # 与训练集重复
-        "CC(=O)OC1=CC=CC=C1C(=O)O",  # 内部重复
-        "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",  # 与训练集重复
-        "C1=CC=CC=C1",  # 新分子（苯）
-        "C1=CC=CC=C1C(=O)O",  # 新分子（苯甲酸）
-        "C1=CC=CC=C1C(=O)OC",  # 新分子（苯甲酸甲酯）
-        "invalid_molecule",  # 无效分子
-        "C1=CC=CC=C1",  # 内部重复
-    ]
+    with open(r'gen/R3_1_2', 'r') as f:
+        smiles = f.readlines()
+        for i in smiles:
+            i.replace('\n','')
+
+    generated_smiles = smiles
 
     # 调用分析函数
     validity, internal_dup, overlap = analyze_generated_molecules(
@@ -132,8 +123,3 @@ if __name__ == "__main__":
         verbose=True
     )
 
-    # 如果只需要数值
-    print("\n仅数值输出:")
-    print(f"有效性: {validity:.2%}")
-    print(f"内部重复率: {internal_dup:.2%}")
-    print(f"与训练集重复率: {overlap:.2%}")
