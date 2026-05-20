@@ -1,4 +1,4 @@
-from .base import _mol_decom_mp, _mol_decom_mp_to_pkl_file, _re_calculate_prop_by_smiles
+from decompose.base import _mol_decom_mp, _mol_decom_mp_to_pkl_file, _re_calculate_prop_by_smiles
 from utils import _process_list_parallel
 import pickle
 

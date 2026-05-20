@@ -6,7 +6,7 @@
 from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from typing import List, Tuple, Set, Dict, Optional
-from rdkit.Chem import QED
+
 
 
 def decompose_to_scaffold_and_side_chains(smiles: str) -> Dict:
@@ -36,57 +36,32 @@ def decompose_to_scaffold_and_side_chains(smiles: str) -> Dict:
     mol = Chem.MolFromSmiles(canonical_smiles)
     Chem.SanitizeMol(mol)
 
-    print(f"\n原始分子:")
-    print(f"  SMILES: {canonical_smiles}")
-    print(f"  原子数: {mol.GetNumAtoms()}")
-
     # 2. 提取Bemis-Murcko骨架
     scaffold_mol = MurckoScaffold.GetScaffoldForMol(mol)
 
     if scaffold_mol.GetNumAtoms() == 0:
-        print("  警告: 分子无环，无法提取骨架")
         return {
             'original_mol': mol,
             'scaffold_mol': None,
             'scaffold_atoms': set(),
             'side_chain_atoms': set(range(mol.GetNumAtoms())),
-            'side_chain_components': [],
+            'side_chain_components': [list(range(mol.GetNumAtoms()))],
             'attachment_points': []
         }
 
-    print(f"\n骨架分子:")
-    print(f"  SMILES: {Chem.MolToSmiles(scaffold_mol)}")
-    print(f"  原子数: {scaffold_mol.GetNumAtoms()}")
 
     # 3. 找到骨架在原分子中的对应原子
     scaffold_atoms = find_scaffold_atoms_in_original(mol, scaffold_mol)
-
-    print(f"\n骨架映射:")
-    print(f"  骨架原子索引: {sorted(scaffold_atoms)}")
 
     # 4. 侧链原子 = 所有原子 - 骨架原子
     all_atoms = set(range(mol.GetNumAtoms()))
     side_chain_atoms = all_atoms - scaffold_atoms
 
-    print(f"\n侧链:")
-    print(f"  侧链原子索引: {sorted(side_chain_atoms)}")
-
     # 5. 找出侧链的连通分量
     side_chain_components = find_connected_components(mol, list(side_chain_atoms))
 
-    print(f"  侧链连通分量数: {len(side_chain_components)}")
-    for i, comp in enumerate(side_chain_components):
-        print(f"    分量{i+1}: {comp}")
-
     # 6. 找出骨架上的连接点（与侧链相连的原子）
     attachment_points = find_attachment_points(mol, scaffold_atoms, side_chain_atoms)
-
-    print(f"\n连接点:")
-    for ap in attachment_points:
-        atom = mol.GetAtomWithIdx(ap['scaffold_atom'])
-        print(f"  骨架原子{ap['scaffold_atom']}({atom.GetSymbol()}) "
-              f"→ 侧链原子{ap['side_chain_atom']}({mol.GetAtomWithIdx(ap['side_chain_atom']).GetSymbol()}) "
-              f"键型:{ap['bond_type']}")
 
     return {
         'original_mol': mol,
@@ -97,34 +72,19 @@ def decompose_to_scaffold_and_side_chains(smiles: str) -> Dict:
         'attachment_points': attachment_points
     }
 
-def _get_prop(mol):
-        qed = QED.qed(mol)
-        props = QED.properties(mol)
-        score = sascorer.calculateScore(mol)
-        score = (10 - score) / 9
-
-        return [qed, props.ALOGP, score]
-
 def find_scaffold_atoms_in_original(original_mol: Chem.Mol, scaffold_mol: Chem.Mol) -> Set[int]:
     """
     找到骨架分子在原分子中对应的原子索引
 
     策略：使用子结构匹配
     """
-    # 获取骨架的规范SMILES
-    scaffold_smiles = Chem.MolToSmiles(scaffold_mol)
-    scaffold_pattern = Chem.MolFromSmarts(scaffold_smiles)
-
-    if scaffold_pattern is None:
-        return set()
 
     # 在原分子中查找骨架
-    matches = original_mol.GetSubstructMatches(scaffold_pattern)
+    matches = original_mol.GetSubstructMatches(scaffold_mol)
 
     if matches:
         # 取第一个匹配
         scaffold_atoms = set(matches[0])
-        print(f"  子结构匹配成功: {scaffold_atoms}")
         return scaffold_atoms
 
     # 如果直接匹配失败，尝试使用原子映射
@@ -149,7 +109,6 @@ def heuristic_scaffold_mapping(original_mol: Chem.Mol, scaffold_mol: Chem.Mol) -
             ring_atoms.update(ring)
 
         if ring_atoms:
-            print(f"  启发式映射: 使用环原子作为骨架 {ring_atoms}")
             return ring_atoms
     except:
         pass
@@ -232,34 +191,6 @@ def bond_type_to_str(bond_type) -> str:
     return mapping.get(bond_type, "-")
 
 
-def test_decomposition():
-    """测试骨架分解函数"""
-
-    test_molecules = [
-        ("CS(=O)(=O)C1=CC=C(N2CCN(CC3=CC=C(NS(=O)(=O)C4=CC=NC5=CC=CN=C54)C=C3)CC2)C=C1", "苯酚"),
-        ("CC(=O)O[C@H]1[C@H]2[C@@]([C@H]3[C@@]([C@]4(C[C@@H]5[C@]6(C[C@@H](C(=C([C@@H](O6)C(=O)[C@]5(C4=C(C3=O)C)OC(=O)C)OC(=O)c7ccccc7)O)C)OC(=O)C)O2)OC(=O)c8ccccc8)(C1(C)C)OC(=O)C", "紫杉醇")
-    ]
-
-    print("=" * 80)
-    print("测试骨架分解")
-    print("=" * 80)
-
-    for smiles, name in test_molecules:
-        print("\n" + "=" * 60)
-        print(f"测试: {name}")
-        print("=" * 60)
-
-        try:
-            result = decompose_to_scaffold_and_side_chains(smiles)
-
-            # 可视化结果
-            visualize_decomposition(result)
-
-        except Exception as e:
-            print(f"错误: {e}")
-            import traceback
-            traceback.print_exc()
-
 
 def visualize_decomposition(result: Dict):
     """
@@ -289,4 +220,3 @@ def visualize_decomposition(result: Dict):
 
 if __name__ == "__main__":
     print("RDKit 版本:", Chem.rdBase.rdkitVersion)
-    test_decomposition()

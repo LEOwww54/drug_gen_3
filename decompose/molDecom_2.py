@@ -3,7 +3,7 @@ from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
 from collections import defaultdict
 from decompose_1.sym_calc import *
-
+from decompose_1.translator import smiles2token
 from sympy import false
 
 
@@ -203,13 +203,14 @@ class VirtualAtomConnectionProcessor:
     def _smiles_number_process_mol(self, mol : Chem.Mol, connections, IH):
         tokens = []
         tokens.append('{')
+        text = {}
         for atom in mol.GetAtoms():
             token = ['^atom^']
 
             symbol = f"[{atom.GetSymbol()}]"
             formal_charge = f"<fc{str(atom.GetFormalCharge())}>"
             atom_index = atom.GetAtomMapNum()
-            atom_sym = f"<sym{atom.GetProp("_symmetry")}>"
+            atom_sym = f"<sym{atom.GetProp('_symmetry')}>"
 
             conn_info = []
             for connection in connections:
@@ -226,7 +227,9 @@ class VirtualAtomConnectionProcessor:
             if(atom.IsInRing()):
                 token.append('<r>')
 
-            tokens.extend(token)
+            text[atom.GetIdx()] = token
+
+        tokens.extend(smiles2token(mol, text))
 
         tokens.append('}')
         return tokens

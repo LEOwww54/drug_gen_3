@@ -271,7 +271,11 @@ def mol_translate(text : str):
         links = []
         b = False
 
+        fc = 0
+
         functional_token = ''
+
+        ring_counter = 1
 
         for token in frag:
             if token == '^atom^' and not first_check:
@@ -282,6 +286,12 @@ def mol_translate(text : str):
                         symbol = symbol.lower()
                 aromatic = False
                 if b:
+                    if not fc == 0:
+                        fc = 0
+                        if fc > 0 :
+                            symbol += f'{fc}+'
+                        else:
+                            symbol += f'{fc}-'
                     symbol = f"[{symbol}]"
                 b = False
 
@@ -322,14 +332,20 @@ def mol_translate(text : str):
                     link_bond = token[2]
                     continue
                 if token[1] == 'r':
-                    functional_token += token[2:-1]
+                    if len(token) > 3:
+                        functional_token += token[2:-1]
                     continue
                 if token[1] == 'A':
                     aromatic = True
                     continue
-                if token[1] == 'c':
-                    FormalCharge = token[2:-1]
-                    FormalCharge = FormalCharge[1:] + FormalCharge[0]
+                if token[1] == 'f':
+                    if token[2] == 'c':
+                        fc = int(token[3:-1])
+                        if not fc == 0:
+                            b = True
+
+                        continue
+                if token[1:4] == 'sym':
                     continue
 
             if token[-1] == '>':
@@ -358,11 +374,5 @@ def gen2mol(texts):
     return result
 
 if __name__ == '__main__':
-    x = "CC(=O)O[C@H]1[C@H]2[C@@]([C@H]3[C@@]([C@]4(C[C@@H]5[C@]6(C[C@@H](C(=C([C@@H](O6)C(=O)[C@]5(C4=C(C3=O)C)OC(=O)C)OC(=O)c7ccccc7)O)C)OC(=O)C)O2)OC(=O)c8ccccc8)(C1(C)C)OC(=O)C"
-    x = Chem.MolFromSmiles(x)
-    s = ['[1*]C1OC(=[10*])C([2*])C([11*])OC1=[12*]', '[13*]C1=CC=C([14*])C=C1', '[3*]C1NC(=[16*])C([4*])NC(=[17*])C2NC(=[18*])C(NC(=[19*])C([14*])NC1=[15*])C1=C(C([7*])=C([6*])C([5*])=C1)C1=C([8*])C=C([9*])C=C12', '[17*]=O', '[18*]=O', '[10*]=O', '[19*]=O', '[11*]O[13*]', '[15*]=O', '[16*]=O', '[12*]=O', '[1*]CC', '[2*]C', '[5*]O', '[6*]O', '[7*]Cl', '[3*]C(C)C', '[8*]O', '[9*]O', '[4*]CC(N)=O']
-    r = auto_connect_fragments_by_dummy_atoms(s)
-    r = gen2mol(s)
-    for i in r:
-        print(i[1])
-
+    r = mol_translate('{ ^atom^ [C] <fc0> <m- 1> <sym0> <r> ( = ^atom^ [C] <fc0> <sym1> <r> <r1> ) ( ^atom^ [C] <fc0> <sym3> <r> ( = ^atom^ [C] <fc0> <m- 11> <sym0> <r> ( ^atom^ [C] <fc0> <sym1> <r> ( = ^atom^ [C] <fc0> <sym2> <r> <r1> ) ) ) ) }')
+    pass

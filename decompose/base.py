@@ -11,6 +11,9 @@ from utils import _process_list_parallel
 from decompose.molDecom import decompose_smiles
 from decompose.molDecom_2 import VirtualAtomConnectionProcessor
 from tqdm import tqdm
+from decompose_1.test3 import decompose_smiles_list
+from rdkit.Contrib.SA_Score import sascorer
+from decompose_1 import test3
 
 def maccs_from_smiles(smiles):
     mol = Chem.MolFromSmiles(smiles)
@@ -53,7 +56,10 @@ def _mol_decomp(smiles):
 def _mol_decomp_with_prop(smiles):
     return decompose_smiles(smiles, func_group_list, link_index=True, prop_calu=True)
 
-def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False):
+def _mol_decomp_with_prop1(smiles):
+    return decompose_smiles_list(smiles)
+
+def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version=1):
     print('decomposing molecules...')
 
     results = []
@@ -67,10 +73,19 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False):
         props = []
         prop_calu = True
 
-    if prop_calu:
-        frags = _process_list_parallel(smiles, num_cores=n_core, process_func=_mol_decomp_with_prop)
+    if version == 1:
+        pf = _mol_decomp_with_prop1
+        ff = _mol_decomp_with_prop1
+    elif version == 0:
+        pf = _mol_decomp_with_prop
+        ff = _mol_decomp
     else:
-        frags = _process_list_parallel(smiles, num_cores=n_core, process_func=_mol_decomp)
+        return
+
+    if prop_calu:
+        frags = _process_list_parallel(smiles, num_cores=n_core, process_func=pf)
+    else:
+        frags = _process_list_parallel(smiles, num_cores=n_core, process_func=ff)
 
     ii = 0
     print('processing frag data...')
@@ -103,7 +118,6 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False):
 
         results.append(tmp)
         oring.append(os)
-        formula.append(frag['formula'])
         if properties is None:
             props.append(frag['prop'])
         pass
@@ -242,4 +256,4 @@ def _re_calculate_prop_by_smiles(smiles):
     return props
 
 if "__main__" == __name__:
-    _mol_decom_mp(["CC(=O)O[C@H]1[C@H]2[C@@]([C@H]3[C@@]([C@]4(C[C@@H]5[C@]6(C[C@@H](C(=C([C@@H](O6)C(=O)[C@]5(C4=C(C3=O)C)OC(=O)C)OC(=O)c7ccccc7)O)C)OC(=O)C)O2)OC(=O)c8ccccc8)(C1(C)C)OC(=O)C"],1)
+    _mol_decom_mp(["Oc1cc(O)c2C(=O)C(=Cc2c1)c3ccc(O)c(O)c3", "CC(=O)O[C@H]1[C@H]2[C@@]([C@H]3[C@@]([C@]4(C[C@@H]5[C@]6(C[C@@H](C(=C([C@@H](O6)C(=O)[C@]5(C4=C(C3=O)C)OC(=O)C)OC(=O)c7ccccc7)O)C)OC(=O)C)O2)OC(=O)c8ccccc8)(C1(C)C)OC(=O)C"],1)

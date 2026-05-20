@@ -1,5 +1,5 @@
 from dataprocess import *
-from dataloader import *
+from ZINC import *
 from gpt.dataset import *
 from gpt.dataset_ori import CommonDataSet
 import gpt.test as gpt

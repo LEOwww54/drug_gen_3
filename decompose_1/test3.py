@@ -8,7 +8,7 @@ from collections import defaultdict
 from rdkit import Chem
 from rdkit.Chem import rdmolops
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
+from rdkit.Contrib.SA_Score import sascorer
 import constant
 from constant import func_group_list
 # 导入之前的函数
@@ -207,9 +207,9 @@ def decompose_component_with_virtual_atoms(mol: Chem.Mol,
                     ring_connections.append((atom, virt_label, bond_type))
 
         # 生成带虚拟原子的环系统
-        sub_mol_with_virt = extract_substructure_with_virtual_atoms(mol, ring_atoms, ring_connections)
+        sub_mol_with_virt, ss = extract_substructure_with_virtual_atoms(mol, ring_atoms, ring_connections)
         if sub_mol_with_virt and sub_mol_with_virt.GetNumAtoms() > 0:
-            Chem.Kekulize(sub_mol_with_virt, True, canonical=True)
+            Chem.Kekulize(sub_mol_with_virt, True)
             sub_type = SubstructureType.RING_SYSTEM_SCAFFOLD if is_scaffold else SubstructureType.RING_SYSTEM
             substructures.append({
                 'type': sub_type,
@@ -217,7 +217,8 @@ def decompose_component_with_virtual_atoms(mol: Chem.Mol,
                 'atoms': list(ring_atoms),
                 'smiles': Chem.MolToSmiles(sub_mol_with_virt),
                 'connections': ring_connections,
-                'is_scaffold': is_scaffold
+                'is_scaffold': is_scaffold,
+                'smiles_wo_index' : ss
             })
             used_atoms.update(ring_atoms)
 
@@ -374,7 +375,7 @@ def decompose_non_ring_component(mol: Chem.Mol,
                         pass
 
             # 生成带虚拟原子的子结构
-            sub_mol_with_virt = extract_substructure_with_virtual_atoms(mol, matched_set, sub_connections)
+            sub_mol_with_virt, ss = extract_substructure_with_virtual_atoms(mol, matched_set, sub_connections)
 
             if sub_mol_with_virt and sub_mol_with_virt.GetNumAtoms() > 0:
 
@@ -384,7 +385,8 @@ def decompose_non_ring_component(mol: Chem.Mol,
                     'atoms': matched_atoms,
                     'smiles': Chem.MolToSmiles(sub_mol_with_virt),
                     'connections': sub_connections,
-                    'is_scaffold': is_scaffold
+                    'is_scaffold': is_scaffold,
+                    'smiles_wo_index' : ss
                 })
 
                 # 标记为已使用
@@ -460,7 +462,7 @@ def decompose_non_ring_component(mol: Chem.Mol,
                     sub_name = f"chain_{len(comp_set)}"
 
                 # 生成带虚拟原子的子结构
-                sub_mol_with_virt = extract_substructure_with_virtual_atoms(mol, comp_set, comp_connections)
+                sub_mol_with_virt, ss = extract_substructure_with_virtual_atoms(mol, comp_set, comp_connections)
 
                 if sub_mol_with_virt and sub_mol_with_virt.GetNumAtoms() > 0:
                     substructures.append({
@@ -469,16 +471,27 @@ def decompose_non_ring_component(mol: Chem.Mol,
                         'atoms': list(comp_set),
                         'smiles': Chem.MolToSmiles(sub_mol_with_virt),
                         'connections': comp_connections,
-                        'is_scaffold': is_scaffold
+                        'is_scaffold': is_scaffold,
+                        'smiles_wo_index' : ss
                     })
                     already_used.update(comp_set)
 
     return substructures, connection_counter
 
-def decompose_smiles(smiles: str):
-    result = decompose_molecule_complete(smiles)
+def decompose_smiles_list(smiles: List[str]):
+    results = []
+    for smile in smiles:
+         results.append(decompose_molecule_complete(smile))
 
-    return [i['smiles'] for i in result['substructures']]
+    return results
+
+def decompose_test(smiles: List[str]):
+    results = []
+    for smile in smiles:
+        result = decompose_molecule_complete(smile)
+        results.append([i['smiles'] for i in result['fragments']])
+
+    return results
 
 def decompose_molecule_complete(smiles: str, start_connection_id: int = 0) -> Dict:
     """
@@ -494,6 +507,7 @@ def decompose_molecule_complete(smiles: str, start_connection_id: int = 0) -> Di
     # 1. 基础分解（骨架和侧链）
     decomposition = decompose_to_scaffold_and_side_chains(smiles)
     mol = decomposition['original_mol']
+    prop = _get_prop(mol)
     scaffold_atoms = decomposition['scaffold_atoms']
     side_chain_components = decomposition['side_chain_components']
     attachment_points = decomposition['attachment_points']
@@ -562,12 +576,22 @@ def decompose_molecule_complete(smiles: str, start_connection_id: int = 0) -> Di
     return {
         'original_smiles': smiles,
         'canonical_smiles': canonical_smiles,
-        'substructures': all_substructures,
+        'fragments': all_substructures,
         'substructure_count': len(all_substructures),
         'max_connection_id': connection_counter,
-        'summary': get_summary(all_substructures)
+        'summary': get_summary(all_substructures),
+        'prop' : prop
     }
 
+from rdkit.Chem import QED
+
+def _get_prop(mol):
+    qed = QED.qed(mol)
+    props = QED.properties(mol)
+    score = sascorer.calculateScore(mol)
+    score = (10 - score) / 9
+
+    return [qed, props.ALOGP, score]
 
 def get_summary(substructures: List[Dict]) -> Dict:
     """生成类型统计"""
@@ -576,56 +600,5 @@ def get_summary(substructures: List[Dict]) -> Dict:
         summary[sub['type']] += 1
     return dict(summary)
 
-
-def print_decomposition_result(result: Dict):
-    """打印分解结果"""
-    print("\n" + "=" * 80)
-    print("分子分解结果")
-    print("=" * 80)
-
-    print(f"\n原始SMILES: {result['original_smiles']}")
-    print(f"规范SMILES: {result['canonical_smiles']}")
-    print(f"最大连接ID: {result['max_connection_id']}")
-    print(f"子结构数量: {result['substructure_count']}")
-    print(f"类型统计: {result['summary']}")
-
-    print(f"\n子结构列表:")
-    print("-" * 60)
-
-    for i, sub in enumerate(result['substructures']):
-        print(f"\n[{i+1}] 类型: {sub['type']}")
-        print(f"    名称: {sub['name']}")
-        print(f"    SMILES: {sub['smiles']}")
-        print(f"    原子: {sub['atoms']}")
-        if sub['connections']:
-            conn_str = ", ".join([f"{c[1]}{c[2]}" for c in sub['connections']])
-            print(f"    连接: {conn_str}")
-        print(f"    骨架: {sub['is_scaffold']}")
-
-
-def test_all():
-    """测试所有分子"""
-    test_molecules = [
-        ("CS(=O)(=O)C1=CC=C(N2CCN(CC3=CC=C(NS(=O)(=O)C4=CC=NC5=CC=CN=C54)C=C3)CC2)C=C1", "苯酚"),
-        ("CC(=O)O[C@H]1[C@H]2[C@@]([C@H]3[C@@]([C@]4(C[C@@H]5[C@]6(C[C@@H](C(=C([C@@H](O6)C(=O)[C@]5(C4=C(C3=O)C)OC(=O)C)OC(=O)c7ccccc7)O)C)OC(=O)C)O2)OC(=O)c8ccccc8)(C1(C)C)OC(=O)C",
-         "紫杉醇")
-    ]
-
-    for smiles, name in test_molecules:
-        print("\n" + "=" * 60)
-        print(f"测试: {name} ({smiles})")
-        print("=" * 60)
-
-        try:
-            result = decompose_molecule_complete(smiles)
-            final_smiles = [i['smiles'] for i in result['substructures']]
-            print_decomposition_result(result)
-        except Exception as e:
-            print(f"错误: {e}")
-            import traceback
-            traceback.print_exc()
-
-
 if __name__ == "__main__":
     print("RDKit 版本:", Chem.rdBase.rdkitVersion)
-    test_all()

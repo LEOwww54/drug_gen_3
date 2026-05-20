@@ -23,7 +23,7 @@ def create_virtual_atom(label: str, bond_type: str) -> Atom:
 
 def extract_substructure_with_virtual_atoms(original_mol: Chem.Mol,
                                             atom_indices: Set[int],
-                                            connections: List[Tuple[int, str, str]]) -> Optional[Chem.Mol]:
+                                            connections: List[Tuple[int, str, str]]) -> Tuple[Optional[Chem.Mol], str]:
     """
     提取子结构并添加虚拟原子标记
 
@@ -73,6 +73,8 @@ def extract_substructure_with_virtual_atoms(original_mol: Chem.Mol,
                 if bond is not None:
                     rw_mol.AddBond(idx_map[orig_idx1], idx_map[orig_idx2], bond.GetBondType())
 
+    smiles_wo_conn = Chem.MolToSmiles(rw_mol.GetMol(), canonical=True)
+
     # 3. 为每个连接点添加虚拟原子
     # 按原原子分组连接，以便同一原子添加多个虚拟原子
     connections_by_atom = defaultdict(list)
@@ -117,7 +119,7 @@ def extract_substructure_with_virtual_atoms(original_mol: Chem.Mol,
     except:
         pass
 
-    return rw_mol.GetMol()
+    return rw_mol.GetMol(), smiles_wo_conn
 
 
 def add_virtual_connections(decomposition_result: Dict) -> Dict:
@@ -194,7 +196,7 @@ def add_virtual_connections(decomposition_result: Dict) -> Dict:
     # 处理骨架
     if scaffold_atoms:
         scaffold_connections = component_connections.get('scaffold', [])
-        scaffold_mol = extract_substructure_with_virtual_atoms(
+        scaffold_mol, _ = extract_substructure_with_virtual_atoms(
             mol, scaffold_atoms, scaffold_connections
         )
         if scaffold_mol and scaffold_mol.GetNumAtoms() > 0:
@@ -208,7 +210,7 @@ def add_virtual_connections(decomposition_result: Dict) -> Dict:
     for comp_name, comp_atoms in component_atoms.items():
         if comp_atoms:
             side_connections = component_connections.get(comp_name, [])
-            side_mol = extract_substructure_with_virtual_atoms(
+            side_mol, _ = extract_substructure_with_virtual_atoms(
                 mol, comp_atoms, side_connections
             )
             if side_mol and side_mol.GetNumAtoms() > 0:

@@ -1,9 +1,8 @@
 from rdkit import Chem
 from rdkit.Chem import rdmolops, QED
 from collections import defaultdict
-from Mol2SMILES import VirtualAtomSMILESGenerator
+from decompose.Mol2SMILES import VirtualAtomSMILESGenerator
 from rdkit.Contrib.SA_Score import sascorer
-
 from rdkit.Chem.Fingerprints.ClusterMols import message
 
 from constant import ele_num
