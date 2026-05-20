@@ -1,20 +1,12 @@
-import json
-import math
 
-import torch
-import torch.utils.data as Data
-# from adapters.methods import lora
-from torch import nn, optim
-import numpy as np
 import time
-from tqdm import tqdm
+
 import torch.nn.functional as F
 
-import base_model
-import constant
-# import token_process
-from base_model import *
-from constant import  *
+import gpt.base_model as base_model
+
+from gpt.base_model import *
+
 
 from gpt.dataset import *
 
