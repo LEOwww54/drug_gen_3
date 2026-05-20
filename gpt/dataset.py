@@ -291,6 +291,8 @@ class PLDataSet(Data.Dataset):
             if d["pocket"] is not None:
                 x = [i not in d["pocket"] for i in range(protein_maxlen)]
                 d["pocket"] = x
+            else:
+                is_pocket = False
 
         decoder_inputs = torch.tensor([d["decoder_input"] for d in batch], dtype=torch.long)
         decoder_outputs = torch.tensor([d["decoder_output"] for d in batch], dtype=torch.long)
