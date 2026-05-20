@@ -239,6 +239,7 @@ class PLDataSet(Data.Dataset):
             pocket = None
         else:
             pocket = data[3]
+            pocket = [i - 1 for i in pocket]
 
         if not smiles[0] == START_TOKEN_ID:
             smiles = [START_TOKEN_ID] + smiles
@@ -253,9 +254,10 @@ class PLDataSet(Data.Dataset):
 
         # return (decoder_input, decoder_output)
 
+
         return {"decoder_input": decoder_input, "decoder_input_len": decoder_input_len,
                 "decoder_output": decoder_output, "decoder_output_len": decoder_output_len, 'protein_len': protein_len,
-                'protein': protein, 'props': props, 'pocket': [i-1 for i in pocket]}
+                'protein': protein, 'props': props, 'pocket': pocket}
 
     def __len__(self):
         return len(self.datas)
