@@ -12,13 +12,11 @@ import torch.nn.functional as F
 
 import base_model
 import constant
-import dataprocess
 # import token_process
 from base_model import *
 from constant import  *
 
 from gpt.dataset import *
-import gpt.ESM as ESM
 
 def get_attn_pad_mask(seq_q, seq_k):
     '''
@@ -598,76 +596,11 @@ def train(data_loader, epochs, vs, lr, model = None, p_type='', conditional=['un
 
     return model
 
-def test(smile, path, p_type='', conditional=['unconditional']):
-    model_path = path + 'GPT.pt'
-    tokenizer_path = path + 'frag_tokenizer.json'
-
-    tokenizer_ = tokenizer.tokenizer_from_file(file_path=tokenizer_path)
-    smile = dataprocess._mol_decom_mp([smile], n_core=1)[0]
-    smiles = tokenizer_.encode(smile[0]).ids
-    title = tokenizer_.encode(smile[0]).tokens[:-1]
-
-    start = tokenizer_.encode('{').ids[0]
-    end = tokenizer_.encode('}').ids[0]
-    blocks = []
-
-    count = 0
-    if_start = False
-
-    for i in smiles:
-        if not if_start:
-            if not i == start:
-                count += 1
-            else:
-                if count > 0:
-                    blocks.append(count)
-                count = 1
-                if_start = True
-        else:
-            if i == end:
-                count += 1
-                blocks.append(count)
-                count = 0
-                if_start = False
-            else:
-                count += 1
-
-    model = GPT(vocab_size=tokenizer_.get_vocab_size(), prop_len=prop_len, p_type=p_type, conditional=conditional)
-    try:
-        model.load_state_dict(torch.load(model_path))
-    except Exception as e:
-        print(e)
-        return None
-
-    model.to(device)
-    model.eval()
-
-    dataset = PLDataSet([(None, smiles, None)])
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False,
-                                  collate_fn=dataset.padding_batch)
-
-
-    with torch.no_grad():
-        for datas in dataloader:
-            dec_inputs, dec_outputs, protein, protein_len, props = datas
-            dec_inputs = torch.tensor(dec_inputs, dtype=torch.long, device=device)
-            _, dec_self_attns, _, dec_out = model(dec_inputs, protein, protein_len, props)
-
-
-    result = torch.stack(dec_self_attns).sum(dim=2).squeeze(dim=1).cpu().numpy()
-
-    results = [i.cpu().numpy() for i in dec_self_attns]
-    return results, result, blocks, title
-
 def fine_tune(model_path, data_loader, epochs, vs, lr, p_type='', conditional=['prop'], save_name='GPT.pt'):
     model = GPT(vocab_size=vs, prop_len=prop_len, p_type=p_type, conditional=conditional)
     model.load_state_dict(torch.load(model_path), strict=False)
 
     train(data_loader, epochs, vs, lr, model, p_type=p_type, conditional=conditional, save_name=save_name)
-
-def train_fragGPT(epoch):
-    data_loader, tokenizer__ = get_frag_default_dataloader()
-    train(data_loader, epoch, tokenizer__.get_vocab_size())
 
 def fine_tune_fragGPT(epoch, model_path, plk_path, tokenizer_path):
     data_loaders, tokenizer__ = get_PL_dataloader(plk_path=plk_path, tokenizer_path=tokenizer_path)
@@ -707,10 +640,7 @@ def train_PL_fragGPT(epoch, plk_path):
 
 
 if __name__ == '__main__':
-    x, xx, blocks, title = test('CC(C)CC1=CC=C(C=C1)C(C)C(=O)O', path='../checkpoints/fragGPT/D4_geom_lora_1_unconditional/', p_type='lora_1', conditional=['unconditional'])
-    from heatmap import main
-    main(data=xx[-12], row_blocks=blocks, col_blocks=blocks, row_headers=title, col_headers=title)
 
-    print(x)
+    print()
 
 
