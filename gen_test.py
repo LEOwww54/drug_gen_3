@@ -32,9 +32,10 @@ def gpt_test(path, n=0, method='top_k', save='smiles_generation_test.txt', batch
         answers = []
         counter = 0
 
-        from gpt.rACSF import cal_rACSF
-        protein_rep = cal_rACSF(protein)
-        protein = protein_rep[0]
+        if protein is not None:
+            from gpt.rACSF import cal_rACSF
+            protein_rep = cal_rACSF(protein)
+            protein = protein_rep[0]
 
         while True:
             sentence = constant.START_TOKEN
@@ -66,7 +67,7 @@ def gpt_test(path, n=0, method='top_k', save='smiles_generation_test.txt', batch
 
 if __name__ == '__main__':
     gpt_test(n=1050, path='', method='temperature',
-             save='gen/rACSF', batch=50, prop=None, conditional=['protein', 'protein_pocket'], protein='', arg=0.9, pocket=[])
+             save='gen/rACSF', batch=50, prop=None, conditional=['protein', 'protein_pocket'], protein=None, arg=0.9, pocket=[])
 
     ## gpt_PL_test_auto(10, 'gpt/protein_test.txt')
     # fp_mol_test()
