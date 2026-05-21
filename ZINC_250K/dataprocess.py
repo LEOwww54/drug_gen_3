@@ -1,4 +1,4 @@
-from ZINC.dataloader import data_from_ZINC_250K
+from ZINC_250K.dataloader import data_from_ZINC_250K
 from decomposer import mol_decom_mp
 
 def mol_decomp_mp_ZINC_250K_pkl(n_core, stat_mode = False):

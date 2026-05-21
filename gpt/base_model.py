@@ -256,7 +256,7 @@ class MultiHeadAttention(nn.Module):
                                                   1)  # attn_mask : [batch_size, n_heads, seq_len, seq_len]
 
         # context: [batch_size, n_heads, len_q, d_v], attn: [batch_size, n_heads, len_q, len_k]
-        if p_type == 'Riemannian':
+        if p_type == 'Riemannian' and 'prop' in self.conditional:
             y_t = self.Riemannian_encoder(y)
             context, attn, _ = self.Riemannian_attention(Q, K, V, attn_mask, y_t)
         else:

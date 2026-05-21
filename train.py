@@ -1,5 +1,5 @@
 
-from ZINC import *
+from ZINC_250K import *
 from gpt.dataset import *
 import gpt.test as gpt
 

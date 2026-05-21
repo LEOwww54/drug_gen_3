@@ -5,7 +5,7 @@ from tokenizers.pre_tokenizers import Whitespace
 import constant
 from constant import *
 
-from ZINC.dataprocess import mol_decomp_mp_ZINC_250K_pkl
+from ZINC_250K.dataprocess import mol_decomp_mp_ZINC_250K_pkl
 
 def get_token(source):
     print(f"getting token from smiles")
