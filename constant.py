@@ -79,7 +79,7 @@ SPECIAL_TOKENS = [PAD_TOKEN, BOS_TOKEN, EOS_TOKEN, UNK_TOKEN, CLS_TOKEN, START_T
 PAD_TOKEN_ID, BOS_TOKEN_ID, EOS_TOKEN_ID, UNK_TOKEN_ID, CLS_TOKEN_ID, START_TOKEN_ID, SEP_TOKEN_ID, SEP1_TOKEN = range(8)
 
 protein_emb_size = 44
-prop_len = 1
+prop_len = 3
 
 maccs_sub_patt = ['[#104]',
     '[#32,#33,#34,#50,#51,#52,#82,#83,#84]',

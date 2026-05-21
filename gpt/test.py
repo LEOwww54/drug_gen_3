@@ -156,49 +156,6 @@ class DecoderLayer(nn.Module):
 
         return dec_outputs, dec_self_attn
 
-        if protein is not None:
-            protein = self.protein_encoder(protein)
-            # residual_cross = dec_outputs
-            residual_cross = dec_outputs
-            #x_cross = self.protein_cross_attn_ln(dec_outputs)
-            x_cross = self.protein_cross_attn_ln(dec_outputs)
-
-            # 应用Cross-Attention
-            cross_output, _ = self.protein_cross_attn(
-                x_cross,
-                protein,
-                protein,
-                protein_padding_mask
-            )
-
-            # gate_input = torch.cat([x_cross, cross_output], dim=-1)
-            # gate = torch.sigmoid(self.protein_condition_gate(gate_input))
-            # conditioned = residual_cross + gate * cross_output
-            conditioned = residual_cross + cross_output
-            dec_outputs = conditioned
-
-        if prop is not None:
-            prop = self.prop_encoder(prop)
-            # residual_cross = dec_outputs
-            residual_cross = dec_outputs
-            # x_cross = self.prop_cross_attn_ln(dec_outputs)
-            x_cross = self.prop_cross_attn_ln(dec_outputs)
-
-            cross_output, _ = self.prop_cross_attn(
-                prop,
-                x_cross,
-                x_cross,
-                None
-            )
-
-            conditioned = residual_cross + cross_output
-            dec_outputs = conditioned
-
-        dec_outputs = self.final_proj(dec_outputs)
-
-        return dec_outputs, dec_self_attn
-
-
 class Decoder(nn.Module):
     def __init__(self, vocab_size, prop_len, p_type, conditional):
         super(Decoder, self).__init__()

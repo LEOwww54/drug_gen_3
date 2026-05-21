@@ -17,6 +17,8 @@ def train_fragGPT_ZINC_250K_unconditional_lora_1(epoch, s, s1):
 
     gpt.test.train(data_loaders, epoch, tokenizer__.get_vocab_size(), lr, p_type='lora_1', conditional=['unconditional'])
 
+
+
 if __name__ == '__main__':
     ## md_test()
     # train_fragGPT_chembl_unconditional_lora_1(2, True, False)

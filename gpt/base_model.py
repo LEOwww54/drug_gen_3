@@ -26,6 +26,111 @@ class ScaledDotProductAttention(nn.Module):
         return context, attn
 
 
+import torch
+import torch.nn as nn
+import numpy as np
+
+
+class RiemannianScaledDotProductAttention(nn.Module):
+    def __init__(self, learnable_G=True, eps=1e-8, lambda_max=1.0):
+        '''
+        d_k: 每个头的维度
+        n_heads: 注意力头数
+        learnable_G: 是否学习每头的度量张量
+        eps: 数值稳定项
+        lambda_max: lambda的最大值（通过sigmoid缩放实现）
+        '''
+        super().__init__()
+        self.d_k = constant.d_k
+        self.n_heads = constant.n_heads
+        self.eps = eps
+        self.lambda_max = lambda_max
+
+        # 1. 可学习的每头独立度量 G（推荐）
+        if learnable_G:
+            init_G = torch.eye(constant.d_k).unsqueeze(0).repeat(constant.n_heads, 1, 1)
+            self.G = nn.Parameter(init_G)  # [n_heads, d_k, d_k]
+        else:
+            self.register_buffer('G', torch.eye(constant.d_k).unsqueeze(0).repeat(constant.n_heads, 1, 1))
+
+        # 2. Lambda学习网络：将 v 映射到标量 lambda
+        # v 的维度是 [batch_size, n_heads, d_k]
+        # 设计一个轻量级MLP，每个头共享或独立
+        self.lambda_mlp = nn.Sequential(
+            nn.Linear(constant.d_k, constant.d_k // 2),
+            nn.ReLU(),
+            nn.Linear(constant.d_k // 2, 1),
+            nn.Sigmoid()  # 输出范围 [0, 1]
+        )
+
+    def forward(self, Q, K, V, v_cond, attn_mask=None):
+        '''
+        Q, K, V: [batch_size, n_heads, len_q, d_k]
+        v_cond: [batch_size, n_heads, d_k] 或 [batch_size, n_heads, 1, d_k]
+                条件切向量，由条件编码器生成
+        attn_mask: [batch_size, n_heads, seq_len, seq_len]
+        '''
+        batch_size, n_heads, len_q, d_k = Q.shape
+
+        # ========== 1. 处理 v_cond 形状 ==========
+        if v_cond.dim() == 3:
+            # [B, H, d_k]
+            v = v_cond
+        elif v_cond.dim() == 4:
+            # [B, H, 1, d_k] -> squeeze
+            v = v_cond.squeeze(2)
+        else:
+            raise ValueError(f"v_cond shape must be [B, H, d_k] or [B, H, 1, d_k], got {v_cond.shape}")
+
+        # ========== 2. 从 v 学习 lambda ==========
+        # 每个 batch 和每个头独立计算 lambda
+        # v: [B, H, d_k] -> lambda: [B, H, 1, 1]
+        lambda_val = self.lambda_mlp(v)  # [B, H, 1]
+        lambda_val = lambda_val.unsqueeze(-1)  # [B, H, 1, 1]
+        # 缩放至 [0, lambda_max]
+        lambda_val = lambda_val * self.lambda_max
+
+        # ========== 3. 获取当前batch的度量 ==========
+        G = self.G.unsqueeze(0).expand(batch_size, -1, -1, -1)  # [B, H, d_k, d_k]
+
+        # ========== 4. 构造条件度量 G_cond = G + lambda * (v v^T)/||v||^2 ==========
+        # 计算 v 的范数平方 [B, H, 1, 1]
+        v_norm_sq = torch.sum(v ** 2, dim=-1, keepdim=True).clamp(min=self.eps)  # [B, H, 1]
+        v_norm_sq = v_norm_sq.unsqueeze(-1)  # [B, H, 1, 1]
+
+        # 构造 v v^T [B, H, d_k, d_k]
+        v_expanded = v.unsqueeze(-1)  # [B, H, d_k, 1]
+        vvT = torch.matmul(v_expanded, v_expanded.transpose(-1, -2))  # [B, H, d_k, d_k]
+
+        # 条件更新量
+        delta_G = lambda_val * vvT / (v_norm_sq + self.eps)  # [B, H, d_k, d_k]
+
+        # 最终度量 [B, H, d_k, d_k]
+        G_cond = G + delta_G
+
+        # ========== 5. 扩展到每个query位置 ==========
+        G_expanded = G_cond.unsqueeze(2)  # [B, H, 1, d_k, d_k]
+
+        # ========== 6. 计算位移矩阵 D_ij = q_i - k_j ==========
+        D = Q.unsqueeze(3) - K.unsqueeze(2)  # [B, H, len_q, len_k, d_k]
+
+        # ========== 7. 黎曼距离平方 D^T @ G_cond @ D ==========
+        # 方法：先计算 D @ G_cond，再与 D 点积
+        DG = torch.einsum('b h q k d, b h e d -> b h q k e', D, G_expanded)
+        riemann_dist_sq = torch.einsum('b h q k d, b h q k d -> b h q k', DG, D)
+
+        # ========== 8. 计算注意力分数 ==========
+        scores = -0.5 * riemann_dist_sq / np.sqrt(self.d_k)
+
+        if attn_mask is not None:
+            scores.masked_fill_(attn_mask, -1e9)
+
+        attn = nn.Softmax(dim=-1)(scores)
+        context = torch.matmul(attn, V)  # [B, H, len_q, d_v]
+
+        # 可选：返回 lambda_val 用于监控
+        return context, attn, lambda_val
+
 class DualChannelCrossAttention(nn.Module):
     def __init__(self, d_model, d_k, d_v, n_heads, p_type='lora_1', conditional=['protein', 'protein_pocket']):
         super().__init__()
@@ -71,31 +176,7 @@ class MultiHeadAttention(nn.Module):
         self.conditional = conditional
 
         if 'prop' in conditional:
-            if p_type == 'lora_0':
-                self.prop_encoder_lora_0 = nn.Sequential(
-                    nn.Linear(constant.prop_len, 4),
-                    nn.GELU(),
-                    nn.Linear(4, 1),
-                )
-                self.lora_0_rank = lora_rank = 8
-                self.lora_0_alpha = 16
-                self.scaling = self.lora_0_alpha / self.lora_0_rank
-
-                self.lora_0_q_A = nn.Parameter(torch.randn(d_model, lora_rank) * 0.01)
-                self.lora_0_q_B = nn.Parameter(torch.randn(lora_rank, d_model) * 0.01)
-
-                # K 的 LoRA
-                self.lora_0_k_A = nn.Parameter(torch.randn(d_model, lora_rank) * 0.01)
-                self.lora_0_k_B = nn.Parameter(torch.randn(lora_rank, d_model) * 0.01)
-
-                # V 的 LoRA
-                self.lora_0_v_A = nn.Parameter(torch.randn(d_model, lora_rank) * 0.01)
-                self.lora_0_v_B = nn.Parameter(torch.randn(lora_rank, d_model) * 0.01)
-
-                # O 的 LoRA
-                self.lora_0_o_A = nn.Parameter(torch.randn(d_model, lora_rank) * 0.01)
-                self.lora_0_o_B = nn.Parameter(torch.randn(lora_rank, d_model) * 0.01)
-            elif p_type == 'lora_1':
+            if p_type == 'lora_1':
                 self.prop_encoder_lora_1 = nn.Sequential(
                     nn.Linear(constant.prop_len, 4),
                     nn.GELU(),
@@ -106,6 +187,15 @@ class MultiHeadAttention(nn.Module):
                 self.lora_1_k = nn.Parameter(torch.randn(d_model, d_model) * 0.01)
                 self.lora_1_v = nn.Parameter(torch.randn(d_model, d_model) * 0.01)
                 self.lora_1_o = nn.Parameter(torch.randn(d_model, d_model) * 0.01)
+            elif p_type == 'Riemannian':
+                self.Riemannian_encoder = nn.Sequential(
+                    nn.Linear(constant.prop_len, self.d_k //2),
+                    nn.GELU(),
+                    nn.Linear(self.d_k //2, self.d_k),
+                    nn.GELU(),
+                    nn.Linear(self.d_k, self.d_k * n_heads),
+                )
+                self.Riemannian_attention = RiemannianScaledDotProductAttention()
 
         self.dropout = nn.Dropout(0.1)
 
@@ -125,22 +215,7 @@ class MultiHeadAttention(nn.Module):
 
         if 'prop' in self.conditional:
             if y is not None:
-                if p_type == 'lora_0':
-                    y = self.prop_encoder_lora_0(y)
-                    y = y.unsqueeze(-1)
-
-                    lora_q = (input_Q @ self.lora_0_q_A) @ self.lora_0_q_B  # [batch_size, seq_len, d_model]
-                    lora_k = (input_K @ self.lora_0_k_A) @ self.lora_0_k_B
-                    lora_v = (input_V @ self.lora_0_v_A) @ self.lora_0_v_B
-
-                    lora_q = lora_q * y * self.scaling
-                    lora_k = lora_k * y * self.scaling
-                    lora_v = lora_v * y * self.scaling
-
-                    Q = Q + lora_q
-                    K = K + lora_k
-                    V = V + lora_v
-                elif p_type == 'lora_1':
+                if p_type == 'lora_1':
                     y = self.prop_encoder_lora_1(y)
                     y = y.unsqueeze(-1)
 
@@ -168,18 +243,19 @@ class MultiHeadAttention(nn.Module):
                                                   1)  # attn_mask : [batch_size, n_heads, seq_len, seq_len]
 
         # context: [batch_size, n_heads, len_q, d_v], attn: [batch_size, n_heads, len_q, len_k]
-        context, attn = ScaledDotProductAttention(self.d_k)(Q, K, V, attn_mask)
+        if p_type == 'Riemannian':
+            y_t = self.Riemannian_encoder(y)
+            y_t = y_t.view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+            context, attn, _ = self.Riemannian_attention(Q, K, V, attn_mask, y_t)
+        else:
+            context, attn = ScaledDotProductAttention(self.d_k)(Q, K, V, attn_mask)
         context = context.transpose(1, 2).reshape(batch_size, -1,
                                                   self.n_heads * self.d_v)  # context: [batch_size, len_q, n_heads * d_v]
         output = self.fc(context)  # [batch_size, len_q, d_model]
 
         if 'prop' in  self.conditional:
             if y is not None:
-                if p_type=='lora_0':
-                    lora_o = (context @ self.lora_0_o_A) @ self.lora_0_o_B
-                    lora_o = lora_o * y * self.scaling
-                    output = output + lora_o
-                elif p_type=='lora_1':
+                if p_type=='lora_1':
                     lora_o = context @ self.lora_1_o
                     lora_o = lora_o * y
                     output = output + lora_o
@@ -200,25 +276,7 @@ class PoswiseFeedForwardNet(nn.Module):
         self.conditional = conditional
 
         if 'prop' in self.conditional:
-            if p_type=='lora_0':
-                self.prop_encoder_lora_0 = nn.Sequential(
-                    nn.Linear(constant.prop_len, 4),
-                    nn.GELU(),
-                    nn.Linear(4, 1),
-                )
-                # LoRA 策略：低秩适配
-                self.lora_0_rank = 8
-                self.lora_0_alpha = 16
-                self.scaling = self.lora_0_alpha / self.lora_0_rank
-
-                # W1 的 LoRA
-                self.lora_0_W1_A = nn.Parameter(torch.randn(d_model, self.lora_0_rank) * 0.01)
-                self.lora_0_W1_B = nn.Parameter(torch.zeros(self.lora_0_rank, d_ff))
-
-                # W2 的 LoRA
-                self.lora_0_W2_A = nn.Parameter(torch.randn(d_ff, self.lora_0_rank) * 0.01)
-                self.lora_0_W2_B = nn.Parameter(torch.zeros(self.lora_0_rank, d_model))
-            elif p_type=='lora_1':
+            if p_type=='lora_1':
                 self.prop_encoder_lora_1 = nn.Sequential(
                     nn.Linear(constant.prop_len, 4),
                     nn.GELU(),
@@ -248,15 +306,7 @@ class PoswiseFeedForwardNet(nn.Module):
         # === LoRA 路径 ===
         # W1 的 LoRA 贡献
         if 'prop' in self.conditional:
-            if self.p_type=='lora_0' and y is not None:
-                y = self.prop_encoder_lora_0(y)
-                y = y.unsqueeze(-1)
-
-                lora_W1 = (inputs @ self.lora_0_W1_A) @ self.lora_0_W1_B  # [batch, seq_len, d_ff]
-                lora_W1 = lora_W1 * self.scaling * y
-                # 合并基础路径和 LoRA 路径
-                h = h_base + lora_W1
-            elif self.p_type=='lora_1':
+            if self.p_type=='lora_1':
                 y = self.prop_encoder_lora_1(y)
                 y = y.unsqueeze(-1)
 
@@ -277,13 +327,7 @@ class PoswiseFeedForwardNet(nn.Module):
         out_base = self.W2(h)  # [batch, seq_len, d_model]
 
         if 'prop' in self.conditional:
-            if self.p_type=='lora_0' and y is not None:
-                lora_W2 = (h @ self.lora_W2_A) @ self.lora_W2_B
-                lora_W2 = lora_W2 * self.scaling * y
-
-                # 合并输出
-                output = out_base + lora_W2
-            elif self.p_type=='lora_1':
+            if self.p_type=='lora_1':
                 lora_W2 = h @ self.lora_1_W2
                 lora_W2 = lora_W2 * y
                 # 合并输出
