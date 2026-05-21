@@ -287,11 +287,11 @@ def mol_translate(text : str):
                 aromatic = False
                 if b:
                     if not fc == 0:
-                        fc = 0
                         if fc > 0 :
                             symbol += f'{fc}+'
                         else:
                             symbol += f'{fc}-'
+                        fc = 0
                     symbol = f"[{symbol}]"
                 b = False
 
