@@ -57,7 +57,7 @@ def gpt_test(path, n=0, method='top_k', save='smiles_generation_test.txt', batch
         data = []
         for x in smiles:
             if '.' in x:
-                pass
+                continue
             data.append(x)
 
         if save is not None:

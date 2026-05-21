@@ -221,6 +221,8 @@ class VirtualAtomConnectionProcessor:
             atom_index = atom.GetAtomMapNum()
             atom_sym = f"<sym{atom.GetProp('_symmetry')}>"
 
+            atom_radical = f'<rad{atom.GetNumRadicalElectrons()}>'
+
             conn_info = []
             for connection in connections:
                 if connection['atom_number'] == atom_index:
@@ -230,6 +232,7 @@ class VirtualAtomConnectionProcessor:
                     conn_info.append(tmp)
 
             token.append(symbol)
+            token.append(atom_radical)
             token.append(formal_charge)
             token.extend(conn_info)
             token.append(atom_sym)

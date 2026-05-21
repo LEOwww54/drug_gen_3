@@ -18,6 +18,7 @@ def t2():
 
 def t3():
     result = mol_decom_mp(['CC1(C)CCCC[C@H]1[NH2+]Cc1c[nH]cn1'], n_core=1, output_path='tmp')
+    r = gen2mol(result[0])
     return result
 
 def t4():
@@ -26,4 +27,5 @@ def t4():
     return r
 
 if "__main__" == __name__:
+    t2()
     t1()

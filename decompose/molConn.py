@@ -286,6 +286,11 @@ def mol_translate(text):
 
         ring_counter = 1
 
+        rad_num = 0
+
+        on_ring = False
+        special_symbol = ""
+
         for token in frag:
             if token == '^atom^' and not first_check:
                 if aromatic:
@@ -294,6 +299,16 @@ def mol_translate(text):
                     else:
                         symbol = symbol.lower()
                 aromatic = False
+
+                if on_ring and len(special_symbol) == 1:
+                    b = True
+                if not on_ring and len(special_symbol) == 1:
+                    b = False
+                    symbol = special_symbol
+                if rad_num > 0:
+                    b = True
+                if not fc == 0:
+                    b = True
                 if b:
                     if not fc == 0:
                         if fc > 0 :
@@ -309,6 +324,8 @@ def mol_translate(text):
                         fc = 0
                     symbol = f"[{symbol}]"
                 b = False
+                on_ring = False
+                special_symbol = ""
 
                 for link in links:
                     symbol += link
@@ -330,10 +347,38 @@ def mol_translate(text):
             if token[0] == '[':
                 ts = token[1:-1]
 
-                b = True
+                if len(ts) == 1:
+                    symbol = ts.upper()
+                    b = False
+                    continue
+
+                if len(ts) >= 2:
+                    ts = ts[0].upper() + ts[1:]
+
+                    if ts[-1].upper() == 'H':
+                        symbol = ts[:-1]
+                        if len(symbol) > 1 and not symbol in ORGANIC_ELEMENTS_2:
+                            b = True
+                            continue
+                        b = False
+                        continue
+                    if ts[-1].isdigit() and ts[-2] == 'H':
+                        symbol = ts[:-2]
+                        if len(symbol) > 1 and not symbol in ORGANIC_ELEMENTS_2:
+                            b = True
+                            continue
+                        b = False
+                        continue
+                    if ts[-1] == '+' or ts[-1] == '-':
+                        b = True
+                        continue
+
+                    symbol = ts
+                    if not symbol in ORGANIC_ELEMENTS_2:
+                        b = True
+                        continue
 
                 symbol = ts
-
                 continue
 
             if token[0] == '<':
@@ -341,6 +386,10 @@ def mol_translate(text):
                     link_bond = token[2]
                     continue
                 if token[1] == 'r':
+                    if token[2] == 'a':
+                        rad_num = int(token[4:-1])
+                        continue
+                    on_ring = True
                     if len(token) > 3:
                         functional_token += token[2:-1]
                     continue
@@ -376,7 +425,10 @@ def gen2mol(texts):
         if isinstance(line, tuple):
             line = line[0]
         processed_line = mol_translate(line)
-        result.append(auto_connect_fragments_by_dummy_atoms(processed_line))
+        try:
+            result.append(auto_connect_fragments_by_dummy_atoms(processed_line))
+        except:
+            continue
 
 
     return result
