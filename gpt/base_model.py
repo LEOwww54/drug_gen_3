@@ -30,96 +30,112 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+import torch
+import torch.nn as nn
+import numpy as np
+
 
 class RiemannianScaledDotProductAttention(nn.Module):
-    def __init__(self, learnable_G=True, eps=1e-8, lambda_max=1.0):
+    def __init__(self, d_k=constant.d_k, n_heads=constant.n_heads, learnable_G=True, eps=1e-8, lambda_max=1.0):
         '''
         d_k: 每个头的维度
-        n_heads: 注意力头数
-        learnable_G: 是否学习每头的度量张量
+        n_heads: 注意力头数（保留用于兼容性，但不再为每头独立存储G）
+        learnable_G: 是否学习度量张量
         eps: 数值稳定项
-        lambda_max: lambda的最大值（通过sigmoid缩放实现）
+        lambda_max: lambda的最大值
         '''
         super().__init__()
-        self.d_k = constant.d_k
-        self.n_heads = constant.n_heads
+        self.d_k = d_k
+        self.n_heads = n_heads
         self.eps = eps
         self.lambda_max = lambda_max
 
-        # 1. 可学习的每头独立度量 G（推荐）
+        # 1. 可学习的度量张量（全局共享，不再分头）
         if learnable_G:
-            init_G = torch.eye(constant.d_k).unsqueeze(0).repeat(constant.n_heads, 1, 1)
-            self.G = nn.Parameter(init_G)  # [n_heads, d_k, d_k]
+            init_G = torch.eye(d_k)  # [d_k, d_k]
+            self.G = nn.Parameter(init_G)
         else:
-            self.register_buffer('G', torch.eye(constant.d_k).unsqueeze(0).repeat(constant.n_heads, 1, 1))
+            self.register_buffer('G', torch.eye(d_k))
 
         # 2. Lambda学习网络：将 v 映射到标量 lambda
-        # v 的维度是 [batch_size, n_heads, d_k]
-        # 设计一个轻量级MLP，每个头共享或独立
+        # v 现在是 [B, d_k]（全局共享，不再分头）
         self.lambda_mlp = nn.Sequential(
-            nn.Linear(constant.d_k, constant.d_k // 2),
+            nn.Linear(d_k, d_k // 2),
             nn.ReLU(),
-            nn.Linear(constant.d_k // 2, 1),
-            nn.Sigmoid()  # 输出范围 [0, 1]
+            nn.Linear(d_k // 2, 1),
+            nn.Sigmoid()
         )
 
     def forward(self, Q, K, V, attn_mask, v_cond):
         '''
         Q, K, V: [batch_size, n_heads, len_q, d_k]
-        v_cond: [batch_size, n_heads, d_k] 或 [batch_size, n_heads, 1, d_k]
-                条件切向量，由条件编码器生成
+        v_cond: [batch_size, d_k] 或 [batch_size, 1, d_k]  # 不再包含 heads 维度
         attn_mask: [batch_size, n_heads, seq_len, seq_len]
         '''
         batch_size, n_heads, len_q, d_k = Q.shape
+        _, _, len_k, _ = K.shape
 
         # ========== 1. 处理 v_cond 形状 ==========
-        if v_cond.dim() == 3:
-            # [B, H, d_k]
-            v = v_cond
-        elif v_cond.dim() == 4:
-            # [B, H, 1, d_k] -> squeeze
-            v = v_cond.squeeze(2)
+        if v_cond.dim() == 2:
+            v = v_cond  # [B, d_k]
+        elif v_cond.dim() == 3:
+            v = v_cond.squeeze(1)  # [B, 1, d_k] -> [B, d_k]
         else:
-            raise ValueError(f"v_cond shape must be [B, H, d_k] or [B, H, 1, d_k], got {v_cond.shape}")
+            raise ValueError(f"v_cond shape must be [B, d_k] or [B, 1, d_k], got {v_cond.shape}")
 
         # ========== 2. 从 v 学习 lambda ==========
-        # 每个 batch 和每个头独立计算 lambda
-        # v: [B, H, d_k] -> lambda: [B, H, 1, 1]
-        lambda_val = self.lambda_mlp(v)  # [B, H, 1]
-        lambda_val = lambda_val.unsqueeze(-1)  # [B, H, 1, 1]
-        # 缩放至 [0, lambda_max]
-        lambda_val = lambda_val * self.lambda_max
+        # v: [B, d_k] -> lambda: [B, 1, 1]
+        lambda_val = self.lambda_mlp(v)  # [B, 1]
+        lambda_val = lambda_val.unsqueeze(-1) * self.lambda_max  # [B, 1, 1]
 
-        # ========== 3. 获取当前batch的度量 ==========
-        G = self.G.unsqueeze(0).expand(batch_size, -1, -1, -1)  # [B, H, d_k, d_k]
+        # ========== 3. 获取度量张量 ==========
+        # G: [d_k, d_k] -> 扩展到 [B, d_k, d_k]
+        G = self.G.unsqueeze(0).expand(batch_size, -1, -1)  # [B, d_k, d_k]
 
         # ========== 4. 构造条件度量 G_cond = G + lambda * (v v^T)/||v||^2 ==========
-        # 计算 v 的范数平方 [B, H, 1, 1]
-        v_norm_sq = torch.sum(v ** 2, dim=-1, keepdim=True).clamp(min=self.eps)  # [B, H, 1]
-        v_norm_sq = v_norm_sq.unsqueeze(-1)  # [B, H, 1, 1]
+        # 计算 v 的范数平方 [B, 1, 1]
+        v_norm_sq = torch.sum(v ** 2, dim=-1, keepdim=True).clamp(min=self.eps)  # [B, 1]
+        v_norm_sq = v_norm_sq.unsqueeze(-1)  # [B, 1, 1]
 
-        # 构造 v v^T [B, H, d_k, d_k]
-        v_expanded = v.unsqueeze(-1)  # [B, H, d_k, 1]
-        vvT = torch.matmul(v_expanded, v_expanded.transpose(-1, -2))  # [B, H, d_k, d_k]
+        # 构造 v v^T [B, d_k, d_k]
+        v_expanded = v.unsqueeze(-1)  # [B, d_k, 1]
+        vvT = torch.matmul(v_expanded, v_expanded.transpose(-1, -2))  # [B, d_k, d_k]
 
         # 条件更新量
-        delta_G = lambda_val * vvT / (v_norm_sq + self.eps)  # [B, H, d_k, d_k]
+        delta_G = lambda_val * vvT / (v_norm_sq + self.eps)  # [B, d_k, d_k]
 
-        # 最终度量 [B, H, d_k, d_k]
+        # 最终度量 [B, d_k, d_k]
         G_cond = G + delta_G
 
+        # ========== 5. 处理多头维度 ==========
+        # Q, K: [B, H, len_q/len_k, d_k]
+        # G_cond: [B, d_k, d_k] -> 需要在 heads 维度上扩展
+        # 扩展 G_cond 到 heads 维度：[B, 1, d_k, d_k] 广播到 [B, H, d_k, d_k]
+        G_expanded = G_cond.unsqueeze(1)  # [B, 1, d_k, d_k]
 
-        # ========== 6. 计算位移矩阵 D_ij = q_i - k_j ==========
-        D = Q.unsqueeze(3) - K.unsqueeze(2)  # [B, H, len_q, len_k, d_k]
+        # ========== 6. 计算位移矩阵 ==========
+        # Q: [B, H, len_q, d_k] -> [B, H, len_q, 1, d_k]
+        # K: [B, H, len_k, d_k] -> [B, H, 1, len_k, d_k]
+        Q_expanded = Q.unsqueeze(3)  # [B, H, len_q, 1, d_k]
+        K_expanded = K.unsqueeze(2)  # [B, H, 1, len_k, d_k]
+        D = Q_expanded - K_expanded  # [B, H, len_q, len_k, d_k]
 
         # ========== 7. 黎曼距离平方 D^T @ G_cond @ D ==========
-        # 方法：先计算 D @ G_cond，再与 D 点积
-        DG = torch.einsum('b h q k d, b h d e -> b h q k e', D, G_cond)
+        # DG = D @ G_cond: [B, H, len_q, len_k, d_k]
+        # 注意：G_cond 是 [B, 1, d_k, d_k]，会广播到 [B, H, d_k, d_k]
+        # 使用 einsum 时，G_cond 需要是 [B, d_k, d_k] 形式
+        # 但这里 G_cond 是 [B, 1, d_k, d_k]
 
-        # riemann_dist_sq = DG · D: [B, H, len_q, len_k]
+        # 方法：使用 G_cond 而不是 G_expanded，避免维度问题
+        # G_cond: [B, d_k, d_k] -> 扩展后用于计算
+        # D: [B, H, len_q, len_k, d_k]
+        # 结果 DG: [B, H, len_q, len_k, d_k]
+        DG = torch.einsum('b h q k d, b d e -> b h q k e', D, G_cond)
+
+        # 计算距离平方
         riemann_dist_sq = torch.einsum('b h q k d, b h q k d -> b h q k', DG, D)
 
-        # ========== 8. 计算注意力分数 ==========
+        # ========== 8. 注意力分数 ==========
         scores = -0.5 * riemann_dist_sq / np.sqrt(self.d_k)
 
         if attn_mask is not None:
@@ -128,7 +144,6 @@ class RiemannianScaledDotProductAttention(nn.Module):
         attn = nn.Softmax(dim=-1)(scores)
         context = torch.matmul(attn, V)  # [B, H, len_q, d_v]
 
-        # 可选：返回 lambda_val 用于监控
         return context, attn, lambda_val
 
 class DualChannelCrossAttention(nn.Module):
