@@ -22,9 +22,10 @@ def auto_connect_fragments_by_dummy_atoms(smiles_list, default_bond_type='-'):
     dummy_number_to_fragments = defaultdict(list)  # 虚拟原子编号到片段的映射
 
     for i, smiles in enumerate(smiles_list):
-        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        mol = Chem.MolFromSmiles(smiles)
+        mol = Chem.AddHs(mol)
         if mol is None:
-            mol = Chem.MolFromSmarts(smiles, sanitize=False)
+            mol = Chem.MolFromSmarts(smiles)
             if mol is None:
                 raise ValueError(f"无法解析SMILES: {smiles}")
         mols.append(mol)
@@ -42,6 +43,7 @@ def auto_connect_fragments_by_dummy_atoms(smiles_list, default_bond_type='-'):
 
     if not connections:
         print("警告: 未找到任何连接关系")
+
 
     # 3. 创建组合分子
     combined_mol = Chem.RWMol()
@@ -109,7 +111,9 @@ def auto_connect_fragments_by_dummy_atoms(smiles_list, default_bond_type='-'):
 
     # 6. 清理并返回结果
     final_mol = combined_mol.GetMol()
+    final_mol = Chem.RemoveHs(final_mol)
     try:
+        Chem.Kekulize(final_mol,True)
         ## Chem.SanitizeMol(final_mol)
         final_smiles = Chem.MolToSmiles(final_mol)
     except Exception as e:
@@ -233,7 +237,7 @@ ORGANIC_ELEMENTS_2 = [
         'Br',
     ]
 
-def mol_translate(text : str):
+def mol_translate(text):
     text = text.replace('\t', ' ')
     if '<sep>' in text:
         text = text.split('<sep>')
@@ -241,6 +245,11 @@ def mol_translate(text : str):
     text = text.strip()
 
     text = text.split(' ')
+    try:
+        text.remove("<start>")
+        text.remove("</s>")
+    except:
+        pass
     results = []
 
     frags = []
@@ -314,20 +323,14 @@ def mol_translate(text : str):
 
                 atom = symbol
                 atoms = atoms + atom
+
                 continue
             else:
                 first_check = False
             if token[0] == '[':
                 ts = token[1:-1]
 
-                if '+' in ts or '-' in ts or ts[0].isdigit() or '@' in ts:
-                    b = True
-                elif len(ts) == 2 and not ts in ORGANIC_ELEMENTS_2:
-                    b = True
-                elif len(ts) == 1 and not ts in ORGANIC_ELEMENTS_1:
-                    b = True
-                elif len(ts) > 2:
-                    b = True
+                b = True
 
                 symbol = ts
 
@@ -370,12 +373,11 @@ def gen2mol(texts):
     result = []
 
     for line in texts:
-        try:
-            processed_line = mol_translate(line)
-            result.append(auto_connect_fragments_by_dummy_atoms(processed_line))
-        except Exception as e:
-            print(e)
-            continue
+        if isinstance(line, tuple):
+            line = line[0]
+        processed_line = mol_translate(line)
+        result.append(auto_connect_fragments_by_dummy_atoms(processed_line))
+
 
     return result
 

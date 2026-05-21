@@ -9,7 +9,7 @@ from ZINC_250K.dataprocess import mol_decomp_mp_ZINC_250K_pkl
 
 def get_token(source):
     print(f"getting token from smiles")
-    n_core = 60
+    n_core = 10
 
     mol_dict = {
         'ZINC_250K':mol_decomp_mp_ZINC_250K_pkl,
@@ -65,7 +65,7 @@ def get_new_tokenizer(source):
 
 def get_new_tokenizer_with_extra(n, source, extra_tokens=[]):
     print(f"training new tokenizer")
-    frag_tokens = get_token(n, source=source)
+    frag_tokens = get_token(source=source)
     frag_tokens.extend(extra_tokens)
 
     tokenizer_frag = Tokenizer(WordLevel(unk_token=UNK_TOKEN))
@@ -92,7 +92,7 @@ def tokenizer_from_file(file_path='gpt/vocab/frag_tokenizer.json'):
     return tokenizer
 
 if __name__ == '__main__':
-    get_new_tokenizer(n=20, source='ZINC_pkl')
+    get_new_tokenizer(source='ZINC_250K')
     # tokenizer = tokenizer_from_file()
     # results = get_token(100000)
     pass

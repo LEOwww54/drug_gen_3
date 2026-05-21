@@ -201,13 +201,22 @@ class VirtualAtomConnectionProcessor:
             return None, None, None
 
     def _smiles_number_process_mol(self, mol : Chem.Mol, connections, IH):
+        ssss = Chem.MolToSmiles(mol)
         tokens = []
         tokens.append('{')
         text = {}
         for atom in mol.GetAtoms():
             token = ['^atom^']
 
-            symbol = f"[{atom.GetSymbol()}]"
+            total_h = atom.GetTotalNumHs()
+            if total_h > 1:
+                symbol = f'[{atom.GetSymbol()}H{total_h}]'
+            elif total_h == 1:
+                symbol = f'[{atom.GetSymbol()}H]'
+            else:
+                symbol = f'[{atom.GetSymbol()}]'
+
+
             formal_charge = f"<fc{str(atom.GetFormalCharge())}>"
             atom_index = atom.GetAtomMapNum()
             atom_sym = f"<sym{atom.GetProp('_symmetry')}>"

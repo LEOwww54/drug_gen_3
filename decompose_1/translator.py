@@ -60,8 +60,10 @@ def tree(mol : Chem.Mol):
 
 def getR(connections : dict[int, dict[int, tuple]], idx : int, text : dict[int, list], ring_pairs : dict[int, set]):
     s = text[idx]
-    l = len(connections)
-
+    if idx in connections:
+        l = len(connections[idx])
+    else:
+        l = 0
     if idx in ring_pairs:
         for i in ring_pairs[idx]:
             if i < 10:
@@ -78,11 +80,11 @@ def getR(connections : dict[int, dict[int, tuple]], idx : int, text : dict[int, 
             st = []
 
             if bond is not None:
-                if (l > 1) and count < l - 1:
+                if (l > 1):
                     st.append('(')
                 st += bond_type_to_str(bond)
                 st += getR(connections, i, text, ring_pairs)
-                if (l > 1) and count < l - 1:
+                if (l > 1):
                     st .append(')')
 
                 s.extend(st)
@@ -103,7 +105,6 @@ def bond_type_to_str(bond_type) -> str:
 
 def smiles_test(smiles = 'C1CCC2C[1*]CC12'):
     mol = Chem.MolFromSmiles(smiles)
-    Chem.Kekulize(mol, True)
     text = {}
     for atom in mol.GetAtoms():
         text[atom.GetIdx()] = [f"{atom.GetSymbol()}"]
@@ -119,5 +120,5 @@ def smiles2token(mol, text):
     return getR(connections, 0, text, ring_pairs)
 
 if __name__ == '__main__':
-    x = smiles_test('[H][C@@]12C[C@H](O)[C@@]3(C)C(=O)[C@H](OC(C)=O)C4=C(C)[C@H](C[C@@](O)([C@@H](OC(=O)c5cc([1*])ccc5)[C@]3([H])[C@@]1(CO2)OC(C)=O)C4(C)C)OC(=O)[C@H](O)[C@@H](NC(=O)c6ccccc6)c7ccccc7')
+    x = smiles_test('CCOc1ccc(OCC)c([C@H]2C(C#N)=C(N)N(c3ccccc3C(F)(F)F)C3=C2C(=O)CCC3)c1')
     mol = Chem.MolFromSmiles('C1CC4CC(C(O)CC(N)CC4)C12CCC3CC2CC(C1CCCC1)5CCCC35')

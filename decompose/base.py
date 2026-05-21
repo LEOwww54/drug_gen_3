@@ -150,8 +150,8 @@ def _mol_data(mol):
 
     for frags in mol[0][0]:
         for frag in frags[1]:
-            s = _remove_H_protect_elements(frag)
-            s = _remove_colon_and_digits(s)
+            # s = _remove_H_protect_elements(frag)
+            s = _remove_colon_and_digits(frag)
             sentence += (s + ' ')
             tmp.append(s)
             # sentence += (constant.SEP_TOKEN + '\t')
