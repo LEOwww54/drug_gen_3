@@ -207,8 +207,6 @@ class MultiHeadAttention(nn.Module):
                     nn.Linear(constant.prop_len, self.d_k //2),
                     nn.GELU(),
                     nn.Linear(self.d_k //2, self.d_k),
-                    nn.GELU(),
-                    nn.Linear(self.d_k, self.d_k * n_heads),
                 )
                 self.Riemannian_attention = RiemannianScaledDotProductAttention()
 
@@ -260,7 +258,6 @@ class MultiHeadAttention(nn.Module):
         # context: [batch_size, n_heads, len_q, d_v], attn: [batch_size, n_heads, len_q, len_k]
         if p_type == 'Riemannian':
             y_t = self.Riemannian_encoder(y)
-            y_t = y_t.view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
             context, attn, _ = self.Riemannian_attention(Q, K, V, attn_mask, y_t)
         else:
             context, attn = ScaledDotProductAttention(self.d_k)(Q, K, V, attn_mask)
