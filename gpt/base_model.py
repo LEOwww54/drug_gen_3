@@ -108,15 +108,15 @@ class RiemannianScaledDotProductAttention(nn.Module):
         # 最终度量 [B, H, d_k, d_k]
         G_cond = G + delta_G
 
-        # ========== 5. 扩展到每个query位置 ==========
-        G_expanded = G_cond.unsqueeze(2)  # [B, H, 1, d_k, d_k]
 
         # ========== 6. 计算位移矩阵 D_ij = q_i - k_j ==========
         D = Q.unsqueeze(3) - K.unsqueeze(2)  # [B, H, len_q, len_k, d_k]
 
         # ========== 7. 黎曼距离平方 D^T @ G_cond @ D ==========
         # 方法：先计算 D @ G_cond，再与 D 点积
-        DG = torch.einsum('b h q k d, b h e d -> b h q k e', D, G_expanded)
+        DG = torch.einsum('b h q k d, b h d e -> b h q k e', D, G_cond)
+
+        # riemann_dist_sq = DG · D: [B, H, len_q, len_k]
         riemann_dist_sq = torch.einsum('b h q k d, b h q k d -> b h q k', DG, D)
 
         # ========== 8. 计算注意力分数 ==========
