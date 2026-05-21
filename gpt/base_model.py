@@ -114,7 +114,7 @@ class RiemannianScaledDotProductAttention(nn.Module):
 
         # ========== 7. 黎曼距离平方 D^T @ G_cond @ D ==========
         # 方法：先计算 D @ G_cond，再与 D 点积
-        DG = torch.einsum('b h q k d, b h i d e -> b h q k e', D, G_cond)
+        DG = torch.einsum('b h q k d, b h d e -> b h q k e', D, G_cond)
 
         # riemann_dist_sq = DG · D: [B, H, len_q, len_k]
         riemann_dist_sq = torch.einsum('b h q k d, b h q k d -> b h q k', DG, D)
