@@ -63,7 +63,7 @@ class RiemannianScaledDotProductAttention(nn.Module):
             nn.Sigmoid()  # 输出范围 [0, 1]
         )
 
-    def forward(self, Q, K, V, v_cond, attn_mask=None):
+    def forward(self, Q, K, V, attn_mask, v_cond):
         '''
         Q, K, V: [batch_size, n_heads, len_q, d_k]
         v_cond: [batch_size, n_heads, d_k] 或 [batch_size, n_heads, 1, d_k]
