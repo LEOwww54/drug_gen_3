@@ -288,9 +288,15 @@ def mol_translate(text : str):
                 if b:
                     if not fc == 0:
                         if fc > 0 :
-                            symbol += f'{fc}+'
+                            if fc > 1:
+                                symbol += f'{fc}+'
+                            else:
+                                symbol += f'+'
                         else:
-                            symbol += f'{fc}-'
+                            if fc < -1:
+                                symbol += f'{fc}-'
+                            else:
+                                symbol += f'-'
                         fc = 0
                     symbol = f"[{symbol}]"
                 b = False
