@@ -208,13 +208,16 @@ class VirtualAtomConnectionProcessor:
         for atom in mol.GetAtoms():
             token = ['^atom^']
 
-            total_h = atom.GetTotalNumHs()
-            if total_h > 1:
-                symbol = f'[{atom.GetSymbol()}H{total_h}]'
-            elif total_h == 1:
-                symbol = f'[{atom.GetSymbol()}H]'
-            else:
+            if atom.GetAtomicNum() in [6, 8]:
                 symbol = f'[{atom.GetSymbol()}]'
+            else:
+                total_h = atom.GetTotalNumHs()
+                if total_h > 1:
+                    symbol = f'[{atom.GetSymbol()}H{total_h}]'
+                elif total_h == 1:
+                    symbol = f'[{atom.GetSymbol()}H]'
+                else:
+                    symbol = f'[{atom.GetSymbol()}]'
 
 
             formal_charge = f"<fc{str(atom.GetFormalCharge())}>"

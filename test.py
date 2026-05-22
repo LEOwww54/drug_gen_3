@@ -27,5 +27,4 @@ def t4():
     return r
 
 if "__main__" == __name__:
-    t2()
-    t1()
+    t3()
