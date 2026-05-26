@@ -13,7 +13,7 @@ def train_fragGPT_ZINC_250K_unconditional_lora_1(epoch, s, s1):
         import gpt.tokenizer as tokenizer_gpt
         tokenizer_gpt.get_new_tokenizer(source='ZINC_250K')
     data_loaders, tokenizer__ = get_frag_default_dataloader_ZINC_250K_pkl('gpt/vocab/frag_tokenizer_ZINC_250K.json', s1)
-    lr = 5e-4
+    lr = 1e-4
 
     gpt.train(data_loaders, epoch, tokenizer__.get_vocab_size(), lr, p_type='lora_1', conditional=['unconditional'])
 
@@ -22,7 +22,8 @@ def train_fragGPT_ZINC_250K_prop_Riemmanian(epoch, s, s1):
         import gpt.tokenizer as tokenizer_gpt
         tokenizer_gpt.get_new_tokenizer(source='ZINC_250K')
     data_loaders, tokenizer__ = get_frag_default_dataloader_ZINC_250K_pkl('gpt/vocab/frag_tokenizer_ZINC_250K.json', s1)
-    lr = 5e-4
+    lr = 1e-4
+
 
     gpt.train(data_loaders, epoch, tokenizer__.get_vocab_size(), lr, p_type='Riemannian', conditional=['prop'])
 
@@ -31,14 +32,26 @@ def train_fragGPT_ZINC_250K_prop_lora_1(epoch, s, s1):
         import gpt.tokenizer as tokenizer_gpt
         tokenizer_gpt.get_new_tokenizer(source='ZINC_250K')
     data_loaders, tokenizer__ = get_frag_default_dataloader_ZINC_250K_pkl('gpt/vocab/frag_tokenizer_ZINC_250K.json', s1)
-    lr = 5e-4
+    lr = 1e-4
 
     gpt.train(data_loaders, epoch, tokenizer__.get_vocab_size(), lr, p_type='lora_1', conditional=['prop'])
+
+def finetune_fragGPT_ZINC_250K_unconditional_lora_1(epoch, s, s1):
+    if s:
+        import gpt.tokenizer as tokenizer_gpt
+        tokenizer_gpt.get_new_tokenizer(source='ZINC_250K')
+    data_loaders, tokenizer__ = get_frag_default_dataloader_ZINC_250K_pkl('checkpoints/fragGPT/T1_ZINC_250K_unconditional/frag_tokenizer.json', s1)
+    lr = 9e-5
+    import  torch
+    model = gpt.GPT(vocab_size=tokenizer__.get_vocab_size(),p_type='lora_1', conditional=['unconditional'])
+    model.load_state_dict(torch.load('checkpoints/fragGPT/T1_ZINC_250K_unconditional/GPT.pt'), strict=False)
+
+    gpt.train(data_loaders, epoch, tokenizer__.get_vocab_size(), lr, p_type='lora_1', conditional=['unconditional'], model=model)
 
 if __name__ == '__main__':
     ## md_test()
     # train_fragGPT_chembl_unconditional_lora_1(2, True, False)
-    train_fragGPT_ZINC_250K_prop_Riemmanian(3, True, False)
+    finetune_fragGPT_ZINC_250K_unconditional_lora_1(4, False, False)
 
     # finetune_alot_ZINC_geom(epoch=8, s=True)
 
