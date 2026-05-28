@@ -36,7 +36,7 @@ import numpy as np
 
 
 class RiemannianScaledDotProductAttention(nn.Module):
-    def __init__(self, d_k=constant.d_k, n_heads=constant.n_heads, learnable_G=True, eps=1e-8, lambda_max=1.0):
+    def __init__(self, d_k=constant.d_k,  n_heads=constant.n_heads, learnable_G=True, eps=1e-8, lambda_max=1.0):
         '''
         d_k: 每个头的维度
         n_heads: 注意力头数（保留用于兼容性，但不再为每头独立存储G）
@@ -111,29 +111,23 @@ class RiemannianScaledDotProductAttention(nn.Module):
         # Q, K: [B, H, len_q/len_k, d_k]
         # G_cond: [B, d_k, d_k] -> 需要在 heads 维度上扩展
         # 扩展 G_cond 到 heads 维度：[B, 1, d_k, d_k] 广播到 [B, H, d_k, d_k]
-        G_expanded = G_cond.unsqueeze(1)  # [B, 1, d_k, d_k]
+        ## G_expanded = G_cond.unsqueeze(1)  # [B, 1, d_k, d_k]
 
         # ========== 6. 计算位移矩阵 ==========
         # Q: [B, H, len_q, d_k] -> [B, H, len_q, 1, d_k]
         # K: [B, H, len_k, d_k] -> [B, H, 1, len_k, d_k]
-        Q_expanded = Q.unsqueeze(3)  # [B, H, len_q, 1, d_k]
-        K_expanded = K.unsqueeze(2)  # [B, H, 1, len_k, d_k]
-        D = Q_expanded - K_expanded  # [B, H, len_q, len_k, d_k]
+        ## Q_expanded = Q.unsqueeze(3)  # [B, H, len_q, 1, d_k]
+        ##K_expanded = K.unsqueeze(2)  # [B, H, 1, len_k, d_k]
+        ###D = Q_expanded - K_expanded  # [B, H, len_q, len_k, d_k]
 
         # ========== 7. 黎曼距离平方 D^T @ G_cond @ D ==========
-        # DG = D @ G_cond: [B, H, len_q, len_k, d_k]
-        # 注意：G_cond 是 [B, 1, d_k, d_k]，会广播到 [B, H, d_k, d_k]
-        # 使用 einsum 时，G_cond 需要是 [B, d_k, d_k] 形式
-        # 但这里 G_cond 是 [B, 1, d_k, d_k]
 
-        # 方法：使用 G_cond 而不是 G_expanded，避免维度问题
-        # G_cond: [B, d_k, d_k] -> 扩展后用于计算
-        # D: [B, H, len_q, len_k, d_k]
-        # 结果 DG: [B, H, len_q, len_k, d_k]
-        DG = torch.einsum('b h q k d, b d e -> b h q k e', D, G_cond)
+        ##DG = torch.einsum('b h q k d, b d e -> b h q k e', D, G_cond)
 
         # 计算距离平方
-        riemann_dist_sq = torch.einsum('b h q k d, b h q k d -> b h q k', DG, D)
+        ##riemann_dist_sq = torch.einsum('b h q k d, b h q k d -> b h q k', DG, D)
+
+        riemann_dist_sq = torch.einsum('bhik,bkj,bhlj->bhil', Q, G_cond, K)
 
         # ========== 8. 注意力分数 ==========
         scores = -0.5 * riemann_dist_sq / np.sqrt(self.d_k)
