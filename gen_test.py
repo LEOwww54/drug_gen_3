@@ -64,6 +64,8 @@ def gpt_test(path, n=0, method='top_k', save='smiles_generation_test.txt', batch
             with open(save, 'w') as f:
                 f.write('\n'.join(data))
 
+    return data, answers
+
 
 if __name__ == '__main__':
     gpt_test(n=1050, path='', method='temperature',
