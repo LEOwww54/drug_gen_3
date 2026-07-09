@@ -58,6 +58,7 @@ def extract_submol(mol, atom_indices) -> tuple[Chem.Mol, dict[int, int], dict[in
         atom = mol.GetAtomWithIdx(idx)
         # 深拷贝原子，保留其所有属性（如手性、形式电荷等）
         new_atom = Chem.Atom(atom.GetSymbol())
+        new_atom.SetIntProp('_symmetry', int(atom.GetProp('_symmetry')))
         new_atom.SetFormalCharge(atom.GetFormalCharge())
         # 可根据需要复制更多属性，如 chiral tag, isotope 等
         # new_atom.SetChiralTag(atom.GetChiralTag())

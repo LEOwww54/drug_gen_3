@@ -206,7 +206,7 @@ class VirtualAtomConnectionProcessor:
         tokens.append('{')
         text = {}
         for atom in mol.GetAtoms():
-            token = ['^atom^']
+            token = []
 
             if atom.GetAtomicNum() in [6, 8]:
                 symbol = f'[{atom.GetSymbol()}]'
@@ -459,7 +459,7 @@ class VirtualAtomConnectionProcessor:
             atom_info.append(f"原子{atom.GetIdx()}: {atom.GetSymbol()} (映射编号: {map_num})")
         return atom_info
 
-    def process_smiles(self, smiles):
+    def process_smiles(self, smiles, mol, mol_props):
         """处理SMILES字符串的主函数"""
         # 提取虚拟原子
         virtual_atoms = self.extract_virtual_atoms(smiles)

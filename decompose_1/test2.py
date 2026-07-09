@@ -63,6 +63,8 @@ def extract_substructure_with_virtual_atoms(original_mol: Chem.Mol,
         # 复制其他属性
         if orig_atom.HasProp("_VirtualLabel"):
             new_atom.SetProp("_VirtualLabel", orig_atom.GetProp("_VirtualLabel"))
+        if orig_atom.HasProp("_symmetry"):
+            new_atom.SetIntProp("_symmetry", int(orig_atom.GetProp("_symmetry")))
         rw_mol.AddAtom(new_atom)
 
     # 2. 添加子结构内部的键

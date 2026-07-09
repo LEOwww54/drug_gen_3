@@ -23,24 +23,25 @@ def tree(mol : Chem.Mol):
             idx = neighbor.GetIdx()
             if idx in visited:
                 continue
+            bond = mol.GetBondBetweenAtoms(atomid, idx).GetBondType()
 
             if idx in queue:
                 pairs.append(sorted((atomid, idx)))
 
                 if idx in ring_pairs:
-                    ring_pairs[idx].add(ring_count)
+                    ring_pairs[idx].add((ring_count, bond))
                 else:
-                    ring_pairs[idx] = {ring_count}
+                    ring_pairs[idx] = {(ring_count, bond)}
 
                 if atomid in ring_pairs:
-                    ring_pairs[atomid].add(ring_count)
+                    ring_pairs[atomid].add((ring_count, bond))
                 else:
-                    ring_pairs[atomid] = {ring_count}
+                    ring_pairs[atomid] = {(ring_count, bond)}
 
                 if not atomid in edge:
-                    edge[atomid] = {idx : (atomid, idx, ring_count, None)}
+                    edge[atomid] = {idx : (atomid, idx, ring_count, bond)}
                 else:
-                    edge[atomid][idx] = (atomid, idx, ring_count, None)
+                    edge[atomid][idx] = (atomid, idx, ring_count, bond)
                 ring_count += 1
                 continue
 
@@ -48,7 +49,6 @@ def tree(mol : Chem.Mol):
 
             if not sorted((atomid, idx)) in pairs:
                 pairs.append((atomid, idx))
-                bond = mol.GetBondBetweenAtoms(atomid, idx).GetBondType()
                 if not atomid in edge:
                     edge[atomid] = {idx : (atomid, idx, 0, bond)}
                 else:
@@ -64,14 +64,16 @@ def getR(connections : dict[int, dict[int, tuple]], idx : int, text : dict[int, 
         l = len(connections[idx])
     else:
         l = 0
-    if idx in ring_pairs:
-        for i in ring_pairs[idx]:
-            if i < 10:
-                s.append(f'<r{i}>')
-            else:
-                s.append(f'<r%{i}>')
 
     count = 0
+
+    if idx in ring_pairs:
+        for i in ring_pairs[idx]:
+            bond = bond_type_to_str(i[1])
+            if i[0] < 10:
+                s.append(f'{bond} <r{i[0]}>')
+            else:
+                s.append(f'{bond} <r%{i[0]}>')
 
     if idx in connections:
         for i, content in connections[idx].items():
@@ -82,13 +84,17 @@ def getR(connections : dict[int, dict[int, tuple]], idx : int, text : dict[int, 
             if bond is not None:
                 if (l > 1):
                     st.append('(')
-                st += bond_type_to_str(bond)
-                st += getR(connections, i, text, ring_pairs)
+                if ring_count > 0:
+                    pass
+                else:
+                    st += bond_type_to_str(bond)
+                    st += getR(connections, i, text, ring_pairs)
                 if (l > 1):
                     st .append(')')
 
                 s.extend(st)
             count += 1
+
     return s
 
 def bond_type_to_str(bond_type) -> str:
@@ -96,7 +102,7 @@ def bond_type_to_str(bond_type) -> str:
     from rdkit.Chem.rdchem import BondType
 
     mapping = {
-        BondType.SINGLE: "",
+        BondType.SINGLE: "-",
         BondType.DOUBLE: "=",
         BondType.TRIPLE: "#",
         BondType.AROMATIC: ":",
@@ -105,6 +111,7 @@ def bond_type_to_str(bond_type) -> str:
 
 def smiles_test(smiles = 'C1CCC2C[1*]CC12'):
     mol = Chem.MolFromSmiles(smiles)
+    Chem.Kekulize(mol,True)
     text = {}
     for atom in mol.GetAtoms():
         text[atom.GetIdx()] = [f"{atom.GetSymbol()}"]
@@ -120,5 +127,6 @@ def smiles2token(mol, text):
     return getR(connections, 0, text, ring_pairs)
 
 if __name__ == '__main__':
-    x = smiles_test('CCOc1ccc(OCC)c([C@H]2C(C#N)=C(N)N(c3ccccc3C(F)(F)F)C3=C2C(=O)CCC3)c1')
+    e = smiles_test('C=1=C=C=C=C=1')
+    x = smiles_test('[*]C1=CC([*])=C2C(C([*])=CC2=C1)=[*]')
     mol = Chem.MolFromSmiles('C1CC4CC(C(O)CC(N)CC4)C12CCC3CC2CC(C1CCCC1)5CCCC35')

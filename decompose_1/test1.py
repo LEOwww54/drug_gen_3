@@ -6,7 +6,7 @@
 from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from typing import List, Tuple, Set, Dict, Optional
-
+from decompose_1.sym_calc import get_symmetry_equivalent_atoms
 
 
 def decompose_to_scaffold_and_side_chains(smiles: str) -> Dict:
@@ -35,6 +35,10 @@ def decompose_to_scaffold_and_side_chains(smiles: str) -> Dict:
     canonical_smiles = Chem.MolToSmiles(mol, canonical=True)
     mol = Chem.MolFromSmiles(canonical_smiles)
     Chem.SanitizeMol(mol)
+    _, symmetry = get_symmetry_equivalent_atoms(mol)
+    for atom in mol.GetAtoms():
+        if not atom.GetSymbol() == '*':
+            atom.SetIntProp("_symmetry", symmetry[atom.GetIdx()])
 
     # 2. 提取Bemis-Murcko骨架
     scaffold_mol = MurckoScaffold.GetScaffoldForMol(mol)
@@ -46,7 +50,8 @@ def decompose_to_scaffold_and_side_chains(smiles: str) -> Dict:
             'scaffold_atoms': set(),
             'side_chain_atoms': set(range(mol.GetNumAtoms())),
             'side_chain_components': [list(range(mol.GetNumAtoms()))],
-            'attachment_points': []
+            'attachment_points': [],
+            'sym': None
         }
 
 

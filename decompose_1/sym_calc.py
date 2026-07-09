@@ -428,7 +428,7 @@ def test_symmetry_analysis():
     print("测试1: 苯酚 (带虚拟原子)")
     print("=" * 80)
 
-    phenol_smiles = "[1*]c1ccccc1"
+    phenol_smiles = "[1*]C"
     phenol_mol = Chem.MolFromSmiles(phenol_smiles)
 
     if phenol_mol:

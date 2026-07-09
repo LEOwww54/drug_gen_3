@@ -260,7 +260,7 @@ def mol_translate(text):
             frag = []
             continue
         if token == '}':
-            frag.append('^atom^')
+            frag.append('[]')
             frags.append(frag)
             continue
 
@@ -292,7 +292,7 @@ def mol_translate(text):
         special_symbol = ""
 
         for token in frag:
-            if token == '^atom^' and not first_check:
+            if token[0] == '[' and not first_check:
                 if aromatic:
                     if len(symbol) > 1:
                         symbol = symbol[0].lower() + symbol[1:]
@@ -341,10 +341,11 @@ def mol_translate(text):
                 atom = symbol
                 atoms = atoms + atom
 
-                continue
             else:
                 first_check = False
             if token[0] == '[':
+                if len(token) <= 2:
+                    continue
                 ts = token[1:-1]
 
                 if len(ts) == 1:
@@ -434,5 +435,6 @@ def gen2mol(texts):
     return result
 
 if __name__ == '__main__':
-    r = mol_translate('{ ^atom^ [C] <fc0> <m- 1> <sym0> <r> ( = ^atom^ [C] <fc0> <sym1> <r> <r1> ) ( ^atom^ [C] <fc0> <sym3> <r> ( = ^atom^ [C] <fc0> <m- 11> <sym0> <r> ( ^atom^ [C] <fc0> <sym1> <r> ( = ^atom^ [C] <fc0> <sym2> <r> <r1> ) ) ) ) }')
+    s = '<start> { [C] <rad0> <fc0> <m= 5> <sym1> <r> ( - [C] <rad0> <fc0> <m- 6> <sym2> <r> = <r2> ) ( - [C] <rad0> <fc0> <sym19> <r> ( - [C] <rad0> <fc0> <sym12> <r> = <r1> - [C] <rad0> <fc0> <sym11> <r> = <r2> ) ( = [C] <rad0> <fc0> <m- 4> <sym17> <r> - [C] <rad0> <fc0> <sym16> <r> = [C] <rad0> <fc0> <m- 3> <sym14> <r> - [C] <rad0> <fc0> <sym13> <r> = <r1> ) ) } { [C] <rad0> <fc0> <m- 6> <sym3> <r> ( = [C] <rad0> <fc0> <sym4> <r> - <r1> ) ( - [C] <rad0> <fc0> <sym10> <r> = [C] <rad0> <fc0> <m- 2> <sym8> <r> - [C] <rad0> <fc0> <m- 1> <sym6> <r> = [C] <rad0> <fc0> <sym5> <r> - <r1> ) } { [O] <rad0> <fc0> <m= 5> <sym0> } { [O] <rad0> <fc0> <m- 2> <sym9> } { [O] <rad0> <fc0> <m- 4> <sym18> } { [O] <rad0> <fc0> <m- 3> <sym15> } { [O] <rad0> <fc0> <m- 1> <sym7> } </s>'
+    r = gen2mol([s])
     pass

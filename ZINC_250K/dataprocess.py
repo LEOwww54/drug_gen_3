@@ -15,3 +15,7 @@ def mol_decomp_mp_ZINC_250K_pkl(n_core, stat_mode = False):
     result.extend(result2)
 
     return result
+
+def test_decompose_all():
+    train, test, all = data_from_ZINC_250K()
+    return mol_decom_mp(smiles=all, n_core=60, output_format='pkl', output_path=['test'])

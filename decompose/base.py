@@ -9,7 +9,7 @@ import re
 from constant import *
 from utils import _process_list_parallel
 from decompose.molDecom import decompose_smiles
-from decompose.molDecom_2 import VirtualAtomConnectionProcessor
+from decompose.SMILES2FST import VirtualAtomConnectionProcessor
 from tqdm import tqdm
 from decompose_1.test3 import decompose_smiles_list
 from rdkit.Contrib.SA_Score import sascorer
@@ -98,6 +98,12 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
             flag = True
             for smiles in frag['fragments']:
                 structure = smiles['smiles']
+                raw_mol = smiles['raw_mol']
+
+                if 'raw_mol_props' in smiles:
+                    raw_mol_props = smiles['raw_mol_props']
+                else:
+                    raw_mol_props = None
 
                 o = smiles['smiles_wo_index']
                 if o not in frags_stat:
@@ -110,10 +116,11 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
                     break
                     # if smiles['type'] == 'ring_system' and not full_ring:
                     #     structure = short_ring(structure)
-                tmp.append(structure)
+                tmp.append((raw_mol, raw_mol_props))
             if not flag:
                 continue
         except Exception as e:
+            print(e)
             continue
 
         results.append(tmp)
@@ -166,7 +173,7 @@ def _mol_decom_frag_decom(frags):
     for frag in frags:
         result = []
         for i in frag:
-            ddd = processor.format_final_output(processor.process_smiles(i))
+            ddd = processor.format_final_output(processor.process_mol(i[0], i[1]))
             if ddd is not None:
                 result.append(ddd)
         results.append(result)

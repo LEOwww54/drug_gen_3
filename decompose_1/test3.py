@@ -218,7 +218,9 @@ def decompose_component_with_virtual_atoms(mol: Chem.Mol,
                 'smiles': Chem.MolToSmiles(sub_mol_with_virt),
                 'connections': ring_connections,
                 'is_scaffold': is_scaffold,
-                'smiles_wo_index' : ss
+                'smiles_wo_index' : ss,
+                'raw_mol_props' : {i.GetIdx() : i.GetPropsAsDict() for i in sub_mol_with_virt.GetAtoms()},
+                'raw_mol' : sub_mol_with_virt
             })
             used_atoms.update(ring_atoms)
 
@@ -386,7 +388,9 @@ def decompose_non_ring_component(mol: Chem.Mol,
                     'smiles': Chem.MolToSmiles(sub_mol_with_virt),
                     'connections': sub_connections,
                     'is_scaffold': is_scaffold,
-                    'smiles_wo_index' : ss
+                    'smiles_wo_index' : ss,
+                    'raw_mol+props' : {i.GetIdx() : i.GetPropsAsDict() for i in sub_mol_with_virt.GetAtoms()},
+                    'raw_mol' : sub_mol_with_virt
                 })
 
                 # 标记为已使用
@@ -472,7 +476,9 @@ def decompose_non_ring_component(mol: Chem.Mol,
                         'smiles': Chem.MolToSmiles(sub_mol_with_virt),
                         'connections': comp_connections,
                         'is_scaffold': is_scaffold,
-                        'smiles_wo_index' : ss
+                        'smiles_wo_index' : ss,
+                        'raw_mol_props' : {i.GetIdx() : i.GetPropsAsDict() for i in sub_mol_with_virt.GetAtoms()},
+                        'raw_mol' : sub_mol_with_virt
                     })
                     already_used.update(comp_set)
 
