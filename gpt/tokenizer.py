@@ -6,6 +6,7 @@ import constant
 from constant import *
 
 from ZINC_250K.dataprocess import mol_decomp_mp_ZINC_250K_pkl
+from ZINC_refined.dataprocess import mol_decomp_mp_ZINC_refined
 
 def get_token(source):
     print(f"getting token from smiles")
@@ -13,6 +14,7 @@ def get_token(source):
 
     mol_dict = {
         'ZINC_250K':mol_decomp_mp_ZINC_250K_pkl,
+        'ZINC_refined': mol_decomp_mp_ZINC_refined,
     }
 
     mols = mol_dict.get(source)(n_core=n_core)
