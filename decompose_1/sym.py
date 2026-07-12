@@ -1,35 +1,14 @@
 """
-对称性分析函数（修复版2）
+对称性分析函数（修复版4 - 真正的Weisfeiler-Lehman）
 使用 igraph 计算带有虚拟原子的分子的对称性
 """
 
 from typing import List, Dict, Set, Tuple, Optional
-from collections import defaultdict
+from collections import defaultdict, Counter
 import igraph as ig
 from rdkit import Chem
 from rdkit.Chem.rdchem import BondType, Atom
-
-
-def get_atom_color(atom: Chem.Atom, include_virtual: bool = True) -> str:
-    """
-    获取原子的颜色编码（用于图同构判断）
-    """
-    atomic_num = atom.GetAtomicNum()
-
-    # 虚拟原子（原子序数0）特殊处理
-    if atomic_num == 0:
-        if include_virtual and atom.HasProp("_VirtualLabel"):
-            return f"VIRT_{atom.GetProp('_VirtualLabel')}"
-        else:
-            return "VIRT"
-
-    # 真实原子的颜色编码
-    charge = atom.GetFormalCharge()
-    h_count = atom.GetTotalNumHs()
-    is_aromatic = 1 if atom.GetIsAromatic() else 0
-    degree = atom.GetDegree()
-
-    return f"{atomic_num}_{charge}_{h_count}_{is_aromatic}_{degree}"
+import hashlib
 
 
 def get_bond_color(bond: Chem.Bond) -> str:
@@ -48,25 +27,159 @@ def get_bond_color(bond: Chem.Bond) -> str:
         return "U"
 
 
-def mol_to_igraph_with_colors(mol: Chem.Mol, include_virtual: bool = True) -> ig.Graph:
-    """将RDKit分子转换为带颜色的igraph图"""
-    # 获取所有非氢原子
+def get_atom_initial_color(atom: Chem.Atom, include_virtual: bool = True) -> str:
+    """
+    获取原子的初始颜色（基础属性）
+
+    这个颜色应该尽可能详细地反映原子的化学环境
+    """
+    atomic_num = atom.GetAtomicNum()
+
+    # 虚拟原子特殊处理
+    if atomic_num == 0:
+        if include_virtual and atom.HasProp("_VirtualLabel"):
+            return f"VIRT_{atom.GetProp('_VirtualLabel')}"
+        else:
+            return "VIRT"
+
+    # 真实原子的详细属性
+    symbol = atom.GetSymbol()
+    charge = atom.GetFormalCharge()
+    h_count = atom.GetTotalNumHs()
+    is_aromatic = atom.GetIsAromatic()
+    degree = atom.GetDegree()
+    implicit_valence = atom.GetImplicitValence()
+    explicit_valence = atom.GetExplicitValence()
+    total_valence = atom.GetTotalValence()
+    hybridization = atom.GetHybridization()
+    no_implicit = atom.GetNoImplicit()
+    chiral_tag = atom.GetChiralTag()
+
+    # 组合成一个详细的签名
+    return (f"{atomic_num}_{symbol}_{charge}_{h_count}_{is_aromatic}_{degree}_"
+            f"{implicit_valence}_{explicit_valence}_{total_valence}_{hybridization}_{no_implicit}_{chiral_tag}")
+
+
+def get_bond_initial_color(bond: Chem.Bond) -> str:
+    """获取键的初始颜色"""
+    bond_type = bond.GetBondType()
+    is_aromatic = bond.GetIsAromatic()
+    is_conjugated = bond.GetIsConjugated()
+    is_in_ring = bond.IsInRing()
+
+    return f"{get_bond_color(bond)}_{is_aromatic}_{is_conjugated}_{is_in_ring}"
+
+
+def weisfeiler_lehman_colors(mol: Chem.Mol, include_virtual: bool = True,
+                            max_iterations: int = 10) -> Dict[int, str]:
+    """
+    使用真正的 Weisfeiler-Lehman 算法计算每个原子的最终颜色
+
+    Args:
+        mol: RDKit分子对象
+        include_virtual: 是否包含虚拟原子
+        max_iterations: 最大迭代次数
+
+    Returns:
+        原子索引 -> 最终颜色字符串
+    """
+    # 1. 初始化：获取所有原子的初始颜色
+    current_colors = {}
+    atoms_to_consider = []
+
+    for atom in mol.GetAtoms():
+        idx = atom.GetIdx()
+        if atom.GetAtomicNum() == 0 and not include_virtual:
+            continue
+        atoms_to_consider.append(idx)
+        current_colors[idx] = get_atom_initial_color(atom, include_virtual)
+
+    # 如果没有原子，返回空字典
+    if not current_colors:
+        return {}
+
+    # 2. 迭代更新颜色
+    for iteration in range(max_iterations):
+        new_colors = {}
+
+        for idx in atoms_to_consider:
+            atom = mol.GetAtomWithIdx(idx)
+
+            # 获取当前原子的颜色
+            current_color = current_colors[idx]
+
+            # 获取所有邻居的颜色（包括键的信息）
+            neighbor_info = []
+            for neighbor in atom.GetNeighbors():
+                neighbor_idx = neighbor.GetIdx()
+
+                # 忽略氢原子（除非我们特别想要包含它们）
+                if neighbor.GetAtomicNum() == 1:
+                    continue
+
+                # 如果邻居不在我们的考虑范围内，跳过
+                if neighbor_idx not in current_colors:
+                    continue
+
+                # 获取键的信息
+                bond = mol.GetBondBetweenAtoms(idx, neighbor_idx)
+                if bond is None:
+                    continue
+
+                bond_color = get_bond_initial_color(bond)
+                neighbor_color = current_colors[neighbor_idx]
+
+                # 组合键和邻居的信息
+                neighbor_info.append(f"{bond_color}|{neighbor_color}")
+
+            # 排序邻居信息以确保一致性
+            neighbor_info.sort()
+
+            # 组合当前颜色和邻居颜色
+            color_tuple = (current_color, tuple(neighbor_info))
+
+            # 使用哈希生成新颜色
+            color_str = str(color_tuple)
+            new_color = hashlib.md5(color_str.encode()).hexdigest()[:12]
+            new_colors[idx] = new_color
+
+        # 检查是否收敛
+        if new_colors == current_colors:
+            break
+
+        current_colors = new_colors
+
+    return current_colors
+
+
+def mol_to_igraph_with_wl_colors(mol: Chem.Mol, include_virtual: bool = True) -> ig.Graph:
+    """
+    使用 Weisfeiler-Lehman 颜色将 RDKit 分子转换为 igraph 图
+    """
+    # 计算 Weisfeiler-Lehman 颜色
+    wl_colors = weisfeiler_lehman_colors(mol, include_virtual, max_iterations=10)
+
+    # 获取所有需要考虑的原子
     atoms = []
     atom_colors = []
     atom_indices = []
 
     for atom in mol.GetAtoms():
+        idx = atom.GetIdx()
         if atom.GetAtomicNum() == 0 and not include_virtual:
             continue
+        if idx not in wl_colors:
+            continue
+
         atoms.append(atom)
-        atom_indices.append(atom.GetIdx())
-        atom_colors.append(get_atom_color(atom, include_virtual))
+        atom_indices.append(idx)
+        atom_colors.append(wl_colors[idx])
 
     # 创建图
     g = ig.Graph()
     g.add_vertices(len(atoms))
 
-    # 设置顶点颜色
+    # 设置顶点颜色和原始索引
     g.vs['color'] = atom_colors
     g.vs['orig_idx'] = atom_indices
 
@@ -82,7 +195,7 @@ def mol_to_igraph_with_colors(mol: Chem.Mol, include_virtual: bool = True) -> ig
                 bond = mol.GetBondBetweenAtoms(idx1, idx2)
                 if bond is not None:
                     edges.append((i, j))
-                    edge_colors.append(get_bond_color(bond))
+                    edge_colors.append(get_bond_initial_color(bond))
 
     g.add_edges(edges)
     g.es['color'] = edge_colors
@@ -92,7 +205,7 @@ def mol_to_igraph_with_colors(mol: Chem.Mol, include_virtual: bool = True) -> ig
 
 def compute_weisfeiler_lehman_labels(g: ig.Graph) -> List[int]:
     """
-    使用Weisfeiler-Lehman算法计算图的规范标签
+    使用Weisfeiler-Lehman算法计算图的规范标签（备用方案）
     """
     n = g.vcount()
     if n == 0:
@@ -137,13 +250,6 @@ def compute_weisfeiler_lehman_labels(g: ig.Graph) -> List[int]:
 def compute_orbits_from_automorphism(aut, g: ig.Graph) -> List[List[int]]:
     """
     从automorphism_group的返回值中提取轨道
-
-    Args:
-        aut: automorphism_group的返回值
-        g: 原始图对象
-
-    Returns:
-        轨道列表，每个轨道是顶点索引列表
     """
     # 情况1: 返回值有orbits方法
     if hasattr(aut, 'orbits'):
@@ -152,7 +258,6 @@ def compute_orbits_from_automorphism(aut, g: ig.Graph) -> List[List[int]]:
     # 情况2: 返回值是列表，包含生成元
     if isinstance(aut, list):
         n = g.vcount()
-        # 使用生成元计算轨道
         return compute_orbits_from_generators(aut, n)
 
     # 情况3: 返回值有generators属性
@@ -167,13 +272,6 @@ def compute_orbits_from_automorphism(aut, g: ig.Graph) -> List[List[int]]:
 def compute_orbits_from_generators(generators: List, n: int) -> List[List[int]]:
     """
     从置换生成元计算轨道
-
-    Args:
-        generators: 置换生成元列表
-        n: 顶点数量
-
-    Returns:
-        轨道列表
     """
     # 初始化并查集
     parent = list(range(n))
@@ -191,7 +289,6 @@ def compute_orbits_from_generators(generators: List, n: int) -> List[List[int]]:
 
     # 应用每个生成元
     for gen in generators:
-        # 假设gen是一个置换，可以是列表、元组或Permutation对象
         if isinstance(gen, (list, tuple)):
             for i, j in enumerate(gen):
                 if i != j:
@@ -250,15 +347,7 @@ def compute_symmetry_orbits_via_nauty(g: ig.Graph) -> Dict[int, List[int]]:
         except Exception as e:
             pass
 
-    # 方法4: 使用分组颜色参数
-    if aut is None:
-        try:
-            aut = g.automorphism_group(group_colors=color_indices)
-            methods_tried.append("group_colors=color_indices")
-        except Exception as e:
-            pass
-
-    # 方法5: 不使用颜色参数
+    # 方法4: 不使用颜色参数
     if aut is None:
         try:
             aut = g.automorphism_group()
@@ -273,13 +362,14 @@ def compute_symmetry_orbits_via_nauty(g: ig.Graph) -> Dict[int, List[int]]:
     # 从返回值提取轨道
     orbits = compute_orbits_from_automorphism(aut, g)
 
-    # 如果需要，根据颜色进一步细分轨道
+    # 根据颜色进一步细分轨道
     refined_orbits = []
     for orbit in orbits:
         color_groups = defaultdict(list)
         for vertex in orbit:
-            color = g.vs[vertex]['color']
-            color_groups[color].append(vertex)
+            if vertex < len(g.vs):
+                color = g.vs[vertex]['color']
+                color_groups[color].append(vertex)
         refined_orbits.extend(color_groups.values())
 
     return {i: list(orbit) for i, orbit in enumerate(refined_orbits)}
@@ -289,9 +379,6 @@ def compute_symmetry_orbits(mol: Chem.Mol, include_virtual: bool = True) -> Dict
     """
     计算分子的对称轨道（等价类）
 
-    注意：虚拟原子不占用等价类ID，包含虚拟原子的等价类会被删除，
-    剩余等价类ID会被重新编号为连续整数
-
     Args:
         mol: RDKit分子对象（可包含虚拟原子）
         include_virtual: 是否在对称性分析中包含虚拟原子
@@ -299,8 +386,8 @@ def compute_symmetry_orbits(mol: Chem.Mol, include_virtual: bool = True) -> Dict
     Returns:
         字典: 原子索引 -> 轨道ID（等价类编号），只包含真实原子
     """
-    # 转换为igraph图
-    g = mol_to_igraph_with_colors(mol, include_virtual)
+    # 使用 Weisfeiler-Lehman 颜色构建图
+    g = mol_to_igraph_with_wl_colors(mol, include_virtual)
 
     if g.vcount() == 0:
         return {}
@@ -333,19 +420,15 @@ def compute_symmetry_orbits(mol: Chem.Mol, include_virtual: bool = True) -> Dict
                     atom_to_orbit[orig_idx] = label
 
     # 过滤掉只包含虚拟原子的等价类，并重新编号
-    # 首先，找出所有被使用的轨道ID（即至少有一个真实原子的轨道）
     used_orbit_ids = set(atom_to_orbit.values())
 
-    # 创建映射：旧轨道ID -> 新轨道ID（连续）
     old_to_new = {}
     new_id = 0
     for old_id in sorted(used_orbit_ids):
         old_to_new[old_id] = new_id
         new_id += 1
 
-    # 应用映射
     filtered_result = {}
-    #atom_to_class = {}
     for atom_idx, old_orbit_id in atom_to_orbit.items():
         if old_orbit_id in old_to_new:
             filtered_result[atom_idx] = old_to_new[old_orbit_id]
@@ -380,23 +463,6 @@ def get_symmetry_equivalent_atoms(mol: Chem.Mol, include_virtual: bool = True) -
     """
     获取对称等价原子组
     """
-    symmetry_ranks = list(Chem.CanonicalRankAtoms(mol, breakTies=False))
-    orbit_to_atoms = {}
-    atoms_to_orbit = {}
-
-    for atom_idx, orbit_id in enumerate(symmetry_ranks):
-        if orbit_id in orbit_to_atoms:
-            orbit_to_atoms[orbit_id].append(atom_idx)
-        else:
-            orbit_to_atoms[orbit_id] = [atom_idx]
-        atoms_to_orbit[atom_idx] = orbit_id
-
-    return dict(orbit_to_atoms), atoms_to_orbit
-
-def get_symmetry_equivalent_atoms_1(mol: Chem.Mol, include_virtual: bool = True) -> tuple[Dict[int, List[int]], Dict[int, int]]:
-    """
-    获取对称等价原子组
-    """
     atom_to_orbit = compute_symmetry_orbits(mol, include_virtual)
 
     orbit_to_atoms = defaultdict(list)
@@ -415,7 +481,7 @@ def print_symmetry_info(mol: Chem.Mol, include_virtual: bool = True):
     print("对称性分析结果")
     print("=" * 60)
 
-    orbit_to_atoms = get_symmetry_equivalent_atoms(mol, include_virtual)
+    orbit_to_atoms, atoms_to_orbit = get_symmetry_equivalent_atoms(mol, include_virtual)
 
     print(f"\n共发现 {len(orbit_to_atoms)} 个等价类:")
     print("-" * 40)
@@ -440,22 +506,40 @@ def print_symmetry_info(mol: Chem.Mol, include_virtual: bool = True):
 def test_symmetry_analysis():
     """测试对称性分析"""
 
-    # 测试1: 苯酚
+    # 测试1: 不对称取代的环己烷
     print("\n" + "=" * 80)
-    print("测试1: 苯酚 (带虚拟原子)")
+    print("测试1: 不对称取代的环己烷 (C1CCC(=C(O)C)CC1)")
     print("=" * 80)
 
-    phenol_smiles = "[1*]C"
-    phenol_mol = Chem.MolFromSmiles(phenol_smiles)
+    mol_smiles = "C1CCC(=C(O)C)CC1"
+    mol = Chem.MolFromSmiles(mol_smiles)
 
-    if phenol_mol:
-        for atom in phenol_mol.GetAtoms():
-            if atom.GetAtomicNum() == 0:
-                atom.SetProp("_VirtualLabel", "[1*]")
+    if mol:
+        print(f"\n输入SMILES: {mol_smiles}")
 
-        print(f"\n输入SMILES: {phenol_smiles}")
-        result_mol = add_symmetry_labels_to_mol(phenol_mol, include_virtual=True)
-        print_symmetry_info(result_mol, include_virtual=True)
+        # 使用新的 Weisfeiler-Lehman 方法
+        print("\n使用 Weisfeiler-Lehman 方法:")
+        atom_to_orbit = compute_symmetry_orbits(mol, include_virtual=False)
+        orbit_to_atoms = defaultdict(list)
+        for atom_idx, orbit_id in atom_to_orbit.items():
+            orbit_to_atoms[orbit_id].append(atom_idx)
+
+        print(f"  共发现 {len(orbit_to_atoms)} 个等价类:")
+        for orbit_id, atoms in sorted(orbit_to_atoms.items()):
+            atom_symbols = []
+            for idx in atoms:
+                atom = mol.GetAtomWithIdx(idx)
+                symbol = atom.GetSymbol()
+                atom_symbols.append(f"{idx}({symbol})")
+            print(f"    等价类 {orbit_id}: {', '.join(atom_symbols)}")
+
+        print(f"\n总计 {len(atom_to_orbit)} 个原子，分为 {len(orbit_to_atoms)} 个等价类")
+        print("期望结果：9个原子应该分为9个等价类（没有两个原子完全等价）")
+
+        if len(orbit_to_atoms) == 9:
+            print("✓ 成功！所有原子都被正确地区分为不同的等价类")
+        else:
+            print(f"✗ 警告：发现 {len(orbit_to_atoms)} 个等价类，期望 9 个")
 
     # 测试2: 苯
     print("\n" + "=" * 80)
@@ -467,13 +551,22 @@ def test_symmetry_analysis():
 
     if benzene_mol:
         print(f"\n输入SMILES: {benzene_smiles}")
-        result_mol = add_symmetry_labels_to_mol(benzene_mol, include_virtual=False)
+        atom_to_orbit = compute_symmetry_orbits(benzene_mol, include_virtual=False)
+        orbit_to_atoms = defaultdict(list)
+        for atom_idx, orbit_id in atom_to_orbit.items():
+            orbit_to_atoms[orbit_id].append(atom_idx)
 
-        orbit_to_atoms = get_symmetry_equivalent_atoms(result_mol, include_virtual=False)
-        print(f"\n共发现 {len(orbit_to_atoms)} 个等价类:")
+        print(f"  共发现 {len(orbit_to_atoms)} 个等价类:")
         for orbit_id, atoms in sorted(orbit_to_atoms.items()):
-            atom_symbols = [f"{idx}({result_mol.GetAtomWithIdx(idx).GetSymbol()})" for idx in atoms]
-            print(f"  等价类 {orbit_id}: {', '.join(atom_symbols)}")
+            atom_symbols = []
+            for idx in atoms:
+                atom = benzene_mol.GetAtomWithIdx(idx)
+                symbol = atom.GetSymbol()
+                atom_symbols.append(f"{idx}({symbol})")
+            print(f"    等价类 {orbit_id}: {', '.join(atom_symbols)}")
+
+        print(f"\n总计 {len(atom_to_orbit)} 个原子，分为 {len(orbit_to_atoms)} 个等价类")
+        print("期望结果：6个碳原子全部等价（1个等价类）")
 
 
 if __name__ == "__main__":

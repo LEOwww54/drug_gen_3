@@ -27,9 +27,18 @@ class VirtualAtomConnectionProcessor:
             dict: 包含处理结果的字典
         """
         if mol_props is not None:
+            map = {}
+            count = 0
             for i, j in mol_props.items():
                 for pname, pvalue in j.items():
-                    mol.GetAtomWithIdx(i).SetProp(pname, str(pvalue))
+                    if pname == '_symmetry':
+                        target = str(pvalue)
+                        if not target in map:
+                            map[target] = count
+                            count += 1
+                        mol.GetAtomWithIdx(i).SetProp(pname, str(map[target]))
+                    else:
+                        mol.GetAtomWithIdx(i).SetProp(pname, str(pvalue))
 
         if mol is None:
             print("错误: 输入的分子对象为空")
