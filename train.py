@@ -6,8 +6,6 @@ import gpt.test as gpt
 
 from torch.utils.data import DataLoader
 
-vocal_size = vocab_size
-
 def train_fragGPT_ZINC_250K_unconditional_lora_1(epoch, s, s1):
     if s:
         import gpt.tokenizer as tokenizer_gpt

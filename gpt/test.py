@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import gpt.base_model as base_model
 
 from gpt.base_model import *
-
+import torch.nn.init as init
 
 from gpt.dataset import *
 
@@ -213,6 +213,13 @@ class GPT(nn.Module):
         super(GPT, self).__init__()
         self.decoder = Decoder(vocab_size, prop_len, p_type=p_type, conditional=conditional)
         self.projection = nn.Linear(d_model, vocab_size).to(device)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            init.kaiming_uniform_(m.weight, a=0, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                init.constant_(m.bias, 0)
 
     def forward(self, dec_inputs, protein, protein_length, pocket, prop):
         """
