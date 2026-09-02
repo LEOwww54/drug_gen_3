@@ -358,7 +358,11 @@ class VirtualAtomConnectionProcessor:
                     symbol = f'[{atom.GetSymbol()}]'
 
             # 形式电荷
-            formal_charge = f"<fc{str(atom.GetFormalCharge())}>"
+            fc = atom.GetFormalCharge()
+            if fc == 0:
+                formal_charge = None
+            else:
+                formal_charge = f"<fc{str(atom.GetFormalCharge())}>"
 
             # 原子映射编号
             atom_index = atom.GetAtomMapNum()
@@ -370,7 +374,11 @@ class VirtualAtomConnectionProcessor:
             atom_sym = f"<sym{symmetry_map.get(atom.GetIdx(), 0)}>"
 
             # 自由基电子数
-            atom_radical = f'<rad{atom.GetNumRadicalElectrons()}>'
+            rad = atom.GetNumRadicalElectrons()
+            if rad > 0:
+                atom_radical = f'<rad{rad}>'
+            else:
+                atom_radical = None
 
             # 连接信息
             conn_info = []
@@ -380,10 +388,15 @@ class VirtualAtomConnectionProcessor:
                     conn_info.append(f"{connection['connection_number']}>")
 
             token.append(symbol)
-            token.append(atom_radical)
-            token.append(formal_charge)
+            if atom_radical is not None:
+                token.append(atom_radical)
+
+            if formal_charge is not None:
+                token.append(formal_charge)
+
             token.extend(conn_info)
-            token.append(atom_sym)
+
+            #token.append(atom_sym)
 
             if atom.IsInRing():
                 token.append('<r>')

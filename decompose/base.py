@@ -66,6 +66,7 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
     oring = []
     formula = []
     frags_stat = {}
+    frags_type = {}
     prop_calu = False
     if properties is not None and len(properties) == len(smiles):
         props = properties
@@ -96,20 +97,24 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
             os = frag['original_smiles']
 
             flag = True
-            for smiles in frag['fragments']:
-                structure = smiles['smiles']
-                raw_mol = smiles['raw_mol']
+            for t in frag['fragments']:
+                structure = t['smiles']
+                raw_mol = t['raw_mol']
 
-                if 'raw_mol_props' in smiles:
-                    raw_mol_props = smiles['raw_mol_props']
+                if 'raw_mol_props' in t:
+                    raw_mol_props = t['raw_mol_props']
                 else:
                     raw_mol_props = None
 
-                o = smiles['smiles_wo_index']
-                if o not in frags_stat:
-                    frags_stat[o] = 1
+                type = t['type']
+                if type not in frags_type:
+                    frags_type[type] = {}
+
+                o = t['smiles_wo_index']
+                if o not in frags_type[type]:
+                    frags_type[type][o] = 1
                 else:
-                    frags_stat[o] += 1
+                    frags_type[type][o] += 1
 
                 if 'J' in structure:
                     flag = False
@@ -130,7 +135,7 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
         pass
 
     if statistic_only:
-        return None, None, None, None, frags_stat
+        return None, None, None, None, frags_type
     else:
         print('advance molecular decomposition')
         import constant
@@ -147,7 +152,7 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
             results2.append(xx[1])
 
     print('molecule decomposing done')
-    return sentences, results2, oring, props, frags_stat
+    return sentences, results2, oring, props, frags_type
 
 def _mol_data(mol):
     mol = mol
@@ -263,4 +268,5 @@ def _re_calculate_prop_by_smiles(smiles):
     return props
 
 if "__main__" == __name__:
-    _mol_decom_mp(["C1CCC(=C(O)C)CC1","CC1=CC(C=C)=CC(C)=C1","Oc1cc(O)c2C(=O)C(=Cc2c1)c3ccc(O)c(O)c3", "CC(=O)O[C@H]1[C@H]2[C@@]([C@H]3[C@@]([C@]4(C[C@@H]5[C@]6(C[C@@H](C(=C([C@@H](O6)C(=O)[C@]5(C4=C(C3=O)C)OC(=O)C)OC(=O)c7ccccc7)O)C)OC(=O)C)O2)OC(=O)c8ccccc8)(C1(C)C)OC(=O)C"],1)
+    x = _mol_decom_mp(["C1CCC(C(=O)O)CC1","CC1=CC(C=C)=CC(C)=C1","Oc1cc(O)c2C(=O)C(=Cc2c1)c3ccc(O)c(O)c3", "CC(=O)O[C@H]1[C@H]2[C@@]([C@H]3[C@@]([C@]4(C[C@@H]5[C@]6(C[C@@H](C(=C([C@@H](O6)C(=O)[C@]5(C4=C(C3=O)C)OC(=O)C)OC(=O)c7ccccc7)O)C)OC(=O)C)O2)OC(=O)c8ccccc8)(C1(C)C)OC(=O)C"],1)
+    print()

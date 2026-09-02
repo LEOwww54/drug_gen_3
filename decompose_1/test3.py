@@ -379,11 +379,13 @@ def decompose_non_ring_component(mol: Chem.Mol,
             # 生成带虚拟原子的子结构
             sub_mol_with_virt, ss = extract_substructure_with_virtual_atoms(mol, matched_set, sub_connections)
 
+            sub_type = "PREDEFINED" if not is_scaffold else "PREDEFINED_SCAFFOLD"
+
             if sub_mol_with_virt and sub_mol_with_virt.GetNumAtoms() > 0:
 
                 substructures.append({
-                    'type': "",
-                    'name': "",
+                    'type': sub_type,
+                    'name': smarts,
                     'atoms': matched_atoms,
                     'smiles': Chem.MolToSmiles(sub_mol_with_virt),
                     'connections': sub_connections,
