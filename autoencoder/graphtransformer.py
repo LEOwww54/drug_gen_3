@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from rdkit import Chem
 from autoencoder.dataprocess import MoleculeGraph
+from constant import device
 
 
 class PositionalEncoding(nn.Module):
@@ -334,7 +335,7 @@ class GraphAutoencoderLoss(nn.Module):
         # 1. 原子类型损失
         B, N, _ = target['node_feat'].shape
         target_atoms = target['node_feat'][:, :, 0]  # 使用第一个特征作为原子类型
-        target_atoms = (target_atoms * 100).long()  # 还原原子序数
+        target_atoms = (target_atoms * 100).long().to(device)  # 还原原子序数
 
         # 修复：确保预测和目标尺寸一致
         pred_atoms = pred['atom_logits'][:, :N, :]  # 只取有效长度

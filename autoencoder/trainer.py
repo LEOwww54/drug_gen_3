@@ -6,7 +6,7 @@ import torch
 from autoencoder.graphtransformer import GraphAutoencoderLoss, GraphTransformerAutoencoder
 import numpy as np
 from autoencoder.dataprocess import from_json, SubstructureDataset, collate_graphs
-
+from constant import device
 
 class GraphAutoencoderTrainer:
     """训练器"""
@@ -203,7 +203,7 @@ def train(smiles_list):
         train_loader=train_loader,
         val_loader=val_loader,
         lr=1e-4,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        device=device
     )
 
     trainer.train(epochs=50, save_path='graph_autoencoder.pth')
