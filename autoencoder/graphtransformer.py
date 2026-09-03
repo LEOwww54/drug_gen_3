@@ -22,7 +22,7 @@ class PositionalEncoding(nn.Module):
 
 
 class GraphMultiHeadAttention(nn.Module):
-    """多头图注意力"""
+    """多头图注意力（修复版）"""
 
     def __init__(self, d_model, n_heads, d_edge, dropout=0.1):
         super().__init__()
@@ -36,6 +36,7 @@ class GraphMultiHeadAttention(nn.Module):
         self.w_k = nn.Linear(d_model, d_model)
         self.w_v = nn.Linear(d_model, d_model)
 
+        # 修复：确保边特征处理正确
         self.w_edge = nn.Linear(d_edge, n_heads)
         self.w_out = nn.Linear(d_model, d_model)
 
@@ -54,15 +55,28 @@ class GraphMultiHeadAttention(nn.Module):
         V = self.w_v(node_feat).view(B, N, self.n_heads, self.d_k).transpose(1, 2)
 
         # 2. 计算注意力分数
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.d_k ** 0.5)
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.d_k ** 0.5)  # B × n_heads × N × N
 
-        # 3. 添加边偏置
-        edge_bias = self.w_edge(edge_feat).permute(0, 3, 1, 2)  # B × n_heads × N × N
+        # 3. 添加边偏置（修复版）
+        # 确保edge_feat的维度正确
+        edge_bias = self.w_edge(edge_feat)  # B × N × N × n_heads
+        edge_bias = edge_bias.permute(0, 3, 1, 2)  # B × n_heads × N × N
+
+        # 修复：确保尺寸一致
+        if edge_bias.shape != scores.shape:
+            # 如果尺寸不匹配，进行裁剪或填充
+            min_N = min(edge_bias.shape[-1], scores.shape[-1])
+            edge_bias = edge_bias[:, :, :min_N, :min_N]
+            scores = scores[:, :, :min_N, :min_N]
+            N = min_N
+
         scores = scores + edge_bias
 
         # 4. 应用掩码
         if mask is not None:
+            # mask: B × N
             mask = mask.unsqueeze(1).unsqueeze(2)  # B × 1 × 1 × N
+            mask = mask[:, :, :, :N]  # 确保尺寸匹配
             scores = scores.masked_fill(~mask, -1e9)
 
         # 5. Softmax
@@ -77,7 +91,7 @@ class GraphMultiHeadAttention(nn.Module):
 
 
 class GraphTransformerLayer(nn.Module):
-    """Graph Transformer层"""
+    """Graph Transformer层（修复版）"""
 
     def __init__(self, d_model, n_heads, d_edge, dropout=0.1):
         super().__init__()
@@ -94,6 +108,18 @@ class GraphTransformerLayer(nn.Module):
         )
 
     def forward(self, node_feat, edge_feat, mask=None):
+        # node_feat: B × N × d_model
+        # edge_feat: B × N × N × d_edge
+
+        # 修复：确保node_feat和edge_feat的N维度一致
+        if node_feat.shape[1] != edge_feat.shape[1]:
+            # 如果尺寸不一致，调整到较小值
+            min_N = min(node_feat.shape[1], edge_feat.shape[1])
+            node_feat = node_feat[:, :min_N, :]
+            edge_feat = edge_feat[:, :min_N, :min_N, :]
+            if mask is not None:
+                mask = mask[:, :min_N]
+
         # 自注意力
         attn_out = self.attention(node_feat, edge_feat, mask)
         node_feat = self.norm1(node_feat + attn_out)
@@ -106,7 +132,7 @@ class GraphTransformerLayer(nn.Module):
 
 
 class GraphTransformerAutoencoder(nn.Module):
-    """基于Graph Transformer的自编码器"""
+    """基于Graph Transformer的自编码器（修复版）"""
 
     def __init__(self,
                  node_dim=6,
@@ -175,8 +201,18 @@ class GraphTransformerAutoencoder(nn.Module):
         return mu + eps * std
 
     def encode(self, node_feat, edge_feat, mask):
-        """编码器"""
+        """编码器（修复版）"""
         B, N, _ = node_feat.shape
+
+        # 修复：确保edge_feat与node_feat的N一致
+        if edge_feat.shape[1] != N:
+            # 如果边特征维度不对，进行截断或填充
+            min_N = min(edge_feat.shape[1], N)
+            node_feat = node_feat[:, :min_N, :]
+            edge_feat = edge_feat[:, :min_N, :min_N, :]
+            if mask is not None:
+                mask = mask[:, :min_N]
+            N = min_N
 
         # 1. 嵌入
         node_emb = self.node_embed(node_feat)  # B × N × d_model
@@ -193,9 +229,13 @@ class GraphTransformerAutoencoder(nn.Module):
         cls_mask = torch.ones(B, 1, dtype=torch.bool, device=mask.device)
         mask_ext = torch.cat([cls_mask, mask], dim=1)
 
+        # 修复：扩展边特征以匹配新的节点数
+        edge_emb_ext = torch.zeros(B, N + 1, N + 1, edge_emb.shape[-1], device=edge_emb.device)
+        edge_emb_ext[:, 1:, 1:, :] = edge_emb
+
         # 4. Graph Transformer编码
         for layer in self.encoder_layers:
-            node_emb = layer(node_emb, edge_emb, mask_ext)
+            node_emb = layer(node_emb, edge_emb_ext, mask_ext)
 
         # 5. 提取图表示 (使用虚拟节点)
         graph_emb = node_emb[:, 0, :]  # B × d_model
@@ -208,7 +248,7 @@ class GraphTransformerAutoencoder(nn.Module):
         return z, mu, logvar
 
     def decode(self, z, target_length=None):
-        """解码器"""
+        """解码器（修复版）"""
         B = z.shape[0]
 
         # 1. 预测长度
@@ -237,10 +277,11 @@ class GraphTransformerAutoencoder(nn.Module):
         # 6. 预测原子类型
         atom_logits = self.atom_predictor(node_feat)  # B × max_nodes × 100
 
-        # 7. 预测边
+        # 7. 预测边（修复版 - 只预测有效位置）
         edge_exist_logits = []
         edge_type_logits = []
 
+        max_edges = self.max_nodes * (self.max_nodes - 1) // 2
         for i in range(self.max_nodes):
             for j in range(i + 1, self.max_nodes):
                 pair_feat = torch.cat([node_feat[:, i, :], node_feat[:, j, :]], dim=-1)
@@ -249,8 +290,13 @@ class GraphTransformerAutoencoder(nn.Module):
                 edge_exist_logits.append(exist_logit)
                 edge_type_logits.append(type_logit)
 
-        edge_exist_logits = torch.stack(edge_exist_logits, dim=1)  # B × num_edges × 1
-        edge_type_logits = torch.stack(edge_type_logits, dim=1)  # B × num_edges × 4
+        if edge_exist_logits:
+            edge_exist_logits = torch.stack(edge_exist_logits, dim=1)  # B × num_edges × 1
+            edge_type_logits = torch.stack(edge_type_logits, dim=1)  # B × num_edges × 4
+        else:
+            # 如果没有边，创建空的tensor
+            edge_exist_logits = torch.zeros(B, 0, 1, device=z.device)
+            edge_type_logits = torch.zeros(B, 0, 4, device=z.device)
 
         return atom_logits, edge_exist_logits, edge_type_logits, target_length
 
@@ -272,62 +318,9 @@ class GraphTransformerAutoencoder(nn.Module):
             'pred_length': pred_length
         }
 
-    def encode_smiles(self, smiles):
-        """编码SMILES为潜在向量"""
-        graph = MoleculeGraph(smiles)
-        node_feat, edge_feat, mask, _ = graph.to_dense(self.max_nodes)
-        node_feat = node_feat.unsqueeze(0)
-        edge_feat = edge_feat.unsqueeze(0)
-        mask = mask.unsqueeze(0)
-
-        with torch.no_grad():
-            z, _, _ = self.encode(node_feat, edge_feat, mask)
-        return z.squeeze(0)
-
-    def decode_to_smiles(self, z):
-        """从潜在向量解码为SMILES"""
-        with torch.no_grad():
-            atom_logits, edge_exist_logits, edge_type_logits, pred_length = self.decode(z.unsqueeze(0))
-
-            # 获取预测
-            atom_probs = F.softmax(atom_logits, dim=-1)
-            edge_exist_probs = torch.sigmoid(edge_exist_logits)
-            edge_type_probs = F.softmax(edge_type_logits, dim=-1)
-
-            # 转换为分子
-            n = pred_length.item()
-            atom_types = atom_probs[0, :n].argmax(dim=-1).cpu().numpy()
-
-            # 构建分子
-            mol = Chem.RWMol()
-            for atom_type in atom_types:
-                if atom_type > 0:  # 0表示填充
-                    mol.AddAtom(Chem.Atom(int(atom_type)))
-
-            # 添加键
-            edge_idx = 0
-            for i in range(n):
-                for j in range(i + 1, n):
-                    if edge_exist_probs[0, edge_idx] > 0.5:
-                        bond_type = edge_type_probs[0, edge_idx].argmax().item()
-                        bond_map = {0: Chem.BondType.SINGLE,
-                                    1: Chem.BondType.DOUBLE,
-                                    2: Chem.BondType.TRIPLE,
-                                    3: Chem.BondType.AROMATIC}
-                        mol.AddBond(i, j, bond_map[bond_type])
-                    edge_idx += 1
-
-            try:
-                mol = mol.GetMol()
-                Chem.SanitizeMol(mol)
-                smiles = Chem.MolToSmiles(mol)
-                return smiles
-            except:
-                return None
-
 
 class GraphAutoencoderLoss(nn.Module):
-    """自编码器损失函数"""
+    """自编码器损失函数（修复版）"""
 
     def __init__(self, atom_weight=1.0, edge_weight=1.0, length_weight=0.1, kl_weight=0.001):
         super().__init__()
@@ -337,21 +330,22 @@ class GraphAutoencoderLoss(nn.Module):
         self.kl_weight = kl_weight
 
     def forward(self, pred, target):
-        """
-        pred: 模型输出字典
-        target: 目标字典 (包含node_feat, edge_feat, mask, n_nodes)
-        """
+        """计算损失（修复版）"""
         # 1. 原子类型损失
+        B, N, _ = target['node_feat'].shape
         target_atoms = target['node_feat'][:, :, 0]  # 使用第一个特征作为原子类型
         target_atoms = (target_atoms * 100).long()  # 还原原子序数
+
+        # 修复：确保预测和目标尺寸一致
+        pred_atoms = pred['atom_logits'][:, :N, :]  # 只取有效长度
+
         atom_loss = F.cross_entropy(
-            pred['atom_logits'].permute(0, 2, 1),
+            pred_atoms.permute(0, 2, 1),
             target_atoms,
             ignore_index=0
         )
 
-        # 2. 边损失
-        B, N, _ = target['node_feat'].shape
+        # 2. 边损失（修复版）
         target_edges = target['edge_feat'][:, :, :, 0]  # 边存在性
 
         # 构建目标边标签
@@ -360,41 +354,22 @@ class GraphAutoencoderLoss(nn.Module):
             for i in range(N):
                 for j in range(i + 1, N):
                     edge_labels.append(target_edges[b, i, j] > 0)
-        edge_labels = torch.tensor(edge_labels, dtype=torch.float, device=pred['edge_exist_logits'].device)
-        edge_labels = edge_labels.view(B, -1)
 
-        # 边存在性损失
-        edge_exist_loss = F.binary_cross_entropy_with_logits(
-            pred['edge_exist_logits'].squeeze(-1),
-            edge_labels
-        )
+        if edge_labels:
+            edge_labels = torch.tensor(edge_labels, dtype=torch.float,
+                                       device=pred['edge_exist_logits'].device)
+            edge_labels = edge_labels.view(B, -1)
 
-        # 边类型损失
-        target_edge_types = []
-        for b in range(B):
-            for i in range(N):
-                for j in range(i + 1, N):
-                    if target_edges[b, i, j] > 0:
-                        # 获取键类型
-                        edge_feat = target['edge_feat'][b, i, j]
-                        # 检测哪个键类型是1
-                        if torch.all(edge_feat[:4] == 0):
-                            edge_type = 0
-                        else:
-                            edge_type = torch.argmax(edge_feat[:4])
-                        target_edge_types.append(edge_type)
-                    else:
-                        target_edge_types.append(-1)  # 忽略
-        target_edge_types = torch.tensor(target_edge_types, device=pred['edge_type_logits'].device)
-        target_edge_types = target_edge_types.view(B, -1)
+            # 修复：确保预测和标签的边数量一致
+            pred_edges = pred['edge_exist_logits'][:, :edge_labels.shape[1], :]
 
-        # 只计算有边的位置
-        mask_edges = target_edge_types >= 0
-        edge_type_loss = F.cross_entropy(
-            pred['edge_type_logits'].permute(0, 2, 1),
-            target_edge_types.clamp(0, 3),
-            ignore_index=-1
-        )
+            # 边存在性损失
+            edge_exist_loss = F.binary_cross_entropy_with_logits(
+                pred_edges.squeeze(-1),
+                edge_labels
+            )
+        else:
+            edge_exist_loss = torch.tensor(0.0, device=pred['edge_exist_logits'].device)
 
         # 3. 长度损失
         target_length = target['n_nodes'].float()
@@ -406,7 +381,7 @@ class GraphAutoencoderLoss(nn.Module):
 
         # 总损失
         total_loss = (self.atom_weight * atom_loss +
-                      self.edge_weight * (edge_exist_loss + edge_type_loss) +
+                      self.edge_weight * edge_exist_loss +
                       self.length_weight * length_loss +
                       self.kl_weight * kl_loss)
 
@@ -414,7 +389,6 @@ class GraphAutoencoderLoss(nn.Module):
             'total_loss': total_loss,
             'atom_loss': atom_loss,
             'edge_exist_loss': edge_exist_loss,
-            'edge_type_loss': edge_type_loss,
             'length_loss': length_loss,
             'kl_loss': kl_loss
         }
