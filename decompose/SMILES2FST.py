@@ -360,7 +360,7 @@ class VirtualAtomConnectionProcessor:
             # 形式电荷
             fc = atom.GetFormalCharge()
             if fc == 0:
-                formal_charge = None
+                formal_charge = f"<fc{str(atom.GetFormalCharge())}>"
             else:
                 formal_charge = f"<fc{str(atom.GetFormalCharge())}>"
 
@@ -378,7 +378,7 @@ class VirtualAtomConnectionProcessor:
             if rad > 0:
                 atom_radical = f'<rad{rad}>'
             else:
-                atom_radical = None
+                atom_radical = f'<rad{rad}>'
 
             # 连接信息
             conn_info = []
