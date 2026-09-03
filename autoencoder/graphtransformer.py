@@ -357,8 +357,7 @@ class GraphAutoencoderLoss(nn.Module):
                     edge_labels.append(target_edges[b, i, j] > 0)
 
         if edge_labels:
-            edge_labels = torch.tensor(edge_labels, dtype=torch.float,
-                                       device=pred['edge_exist_logits'].device)
+            edge_labels = torch.tensor(edge_labels, dtype=torch.float, ).to(device)
             edge_labels = edge_labels.view(B, -1)
 
             # 修复：确保预测和标签的边数量一致
@@ -373,7 +372,7 @@ class GraphAutoencoderLoss(nn.Module):
             edge_exist_loss = torch.tensor(0.0, device=pred['edge_exist_logits'].device)
 
         # 3. 长度损失
-        target_length = target['n_nodes'].float()
+        target_length = target['n_nodes'].float().to(device)
         length_loss = F.mse_loss(pred['pred_length'].float(), target_length)
 
         # 4. KL散度
