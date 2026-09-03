@@ -1,6 +1,6 @@
 from collections import defaultdict
 
-import DataLoader
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 import torch
 from autoencoder.graphtransformer import GraphAutoencoderLoss, GraphTransformerAutoencoder
@@ -214,10 +214,3 @@ def train(smiles_list):
     print("\nGenerated molecules:")
     for i, smiles in enumerate(generated):
         print(f"  {i + 1}. {smiles}")
-
-    # 6. 插值示例
-    if len(example_smiles) >= 2:
-        print("\nInterpolation between two molecules:")
-        interpolated = trainer.interpolate(example_smiles[0], example_smiles[1], n_steps=5)
-        for item in interpolated:
-            print(f"  α={item['alpha']:.2f}: {item['smiles']}")
