@@ -76,7 +76,7 @@ class GraphAutoencoderTrainer:
                 # 保存重构示例
                 if len(reconstructions) < 5:
                     z = pred['z']
-                    smiles = self.model.autoencoder.decode_to_graph(z[0])
+                    smiles = self.model.decode_to_graph(z[0])
                     if smiles:
                         reconstructions.append({
                             'input': batch['smiles'][0],
@@ -132,14 +132,14 @@ def train(smiles_list):
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=16,
+        batch_size=128,
         shuffle=True,
         collate_fn=collate_graphs,
         num_workers=0
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=16,
+        batch_size=64,
         shuffle=False,
         collate_fn=collate_graphs,
         num_workers=0
@@ -153,10 +153,10 @@ def train(smiles_list):
     autoencoder = GraphTransformerAutoencoder(
         atom_vocab_size=dataset.atom_vocab_size,
         bond_vocab_size=dataset.bond_vocab_size,
-        d_model=128,
-        latent_dim=64,
+        d_model=256,
+        latent_dim=128,
         n_heads=4,
-        n_layers=3,
+        n_layers=4,
         max_nodes=70,
         dropout=0.1
     )
