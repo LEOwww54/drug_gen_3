@@ -1,6 +1,5 @@
 import torch
 import torch.nn.functional as F
-from pytorch_lightning.trainer.connectors.logger_connector import result
 from torch.utils.data import Dataset, DataLoader
 from rdkit import Chem
 from tqdm import tqdm
@@ -8,7 +7,7 @@ import json
 
 
 class MoleculeGraph:
-    """分子图数据结构（修复版）"""
+    """分子图数据结构 - 只包含原子类型和键类型"""
 
     def __init__(self, smiles, max_nodes=30):
         self.smiles = smiles
@@ -18,146 +17,113 @@ class MoleculeGraph:
             raise ValueError(f"Invalid SMILES: {smiles}")
         Chem.SanitizeMol(self.mol)
 
-        # 构建图
-        self.node_features = self._get_node_features()
-        self.edge_features, self.edge_index = self._get_edge_features()
-        self.n_nodes = len(self.node_features)
+        # 原子类型和键类型
+        self.atom_types = self._get_atom_types()
+        self.bond_types, self.bond_pairs = self._get_bond_types()
+        self.n_nodes = len(self.atom_types)
 
-        # 确保边特征维度一致
-        self.edge_dim = 5  # 固定边特征维度
+        # 原子类型词汇表
+        self.atom_vocab = {
+            'C': 1, 'N': 2, 'O': 3, 'S': 4, 'P': 5,
+            'F': 6, 'Cl': 7, 'Br': 8, 'I': 9, 'B': 10,
+            'Si': 11, 'Se': 12, 'Sn': 13, 'Pb': 14, 'As': 15,
+        }
 
-    def _get_node_features(self):
-        """提取原子特征"""
-        features = []
+        # 键类型词汇表
+        self.bond_vocab = {
+            Chem.BondType.SINGLE: 1,
+            Chem.BondType.DOUBLE: 2,
+            Chem.BondType.TRIPLE: 3,
+            Chem.BondType.AROMATIC: 4,
+        }
+
+    def _get_atom_types(self):
+        """提取原子类型（只保留符号）"""
+        atom_types = []
         for atom in self.mol.GetAtoms():
-            # 原子类型 (one-hot)
-            atom_type = atom.GetAtomicNum()
-            # 度的one-hot
-            degree = atom.GetDegree()
-            # 形式电荷
-            charge = atom.GetFormalCharge()
-            # 杂化方式
-            hybrid = atom.GetHybridization()
-            # 是否在环中
-            in_ring = int(atom.IsInRing())
-            # 芳香性
-            aromatic = int(atom.GetIsAromatic())
+            symbol = atom.GetSymbol()
+            # 处理特殊情况
+            if symbol == 'C' and atom.GetIsAromatic():
+                symbol = 'c'
+            atom_types.append(symbol)
+        return atom_types
 
-            feat = [
-                atom_type / 100.0,  # 归一化
-                degree / 6.0,
-                charge,
-                hybrid / 8.0,
-                in_ring,
-                aromatic
-            ]
-            features.append(feat)
-        return torch.tensor(features, dtype=torch.float)
-
-    def _get_edge_features(self):
-        """提取边特征（修复版）"""
-        edge_features = []
-        edge_index = [[], []]
+    def _get_bond_types(self):
+        """提取键类型"""
+        bond_types = []
+        bond_pairs = []
 
         for bond in self.mol.GetBonds():
             i = bond.GetBeginAtomIdx()
             j = bond.GetEndAtomIdx()
-
-            # 键类型
             bond_type = bond.GetBondType()
-            bond_type_onehot = {
-                Chem.BondType.SINGLE: [1, 0, 0, 0],
-                Chem.BondType.DOUBLE: [0, 1, 0, 0],
-                Chem.BondType.TRIPLE: [0, 0, 1, 0],
-                Chem.BondType.AROMATIC: [0, 0, 0, 1]
-            }.get(bond_type, [0, 0, 0, 0])
 
-            # 是否在环中
-            in_ring = int(bond.IsInRing())
+            # 存储键对和类型
+            bond_pairs.append((i, j))
+            bond_pairs.append((j, i))  # 双向
+            bond_types.append(bond_type)
+            bond_types.append(bond_type)
 
-            feat = bond_type_onehot + [in_ring]
-            edge_features.append(feat)
-            edge_features.append(feat)  # 双向
-
-            edge_index[0].append(i)
-            edge_index[1].append(j)
-            edge_index[0].append(j)
-            edge_index[1].append(i)
-
-        # 修复：如果没有边，返回空的边特征但保持维度一致
-        if len(edge_features) == 0:
-            # 返回空的边特征，但维度为 [0, 5]
-            return torch.tensor([], dtype=torch.float), torch.tensor([[], []], dtype=torch.long)
-
-        return torch.tensor(edge_features, dtype=torch.float), torch.tensor(edge_index, dtype=torch.long)
+        return bond_types, bond_pairs
 
     def to_dense(self, max_nodes):
-        """转换为稠密矩阵（修复版）"""
-        # 节点特征填充
-        node_feat = torch.zeros(max_nodes, self.node_features.shape[-1])
-        node_feat[:self.n_nodes] = self.node_features
+        """转换为稠密矩阵"""
+        # 原子类型：使用one-hot编码
+        atom_feat = torch.zeros(max_nodes, len(self.atom_vocab) + 1)  # +1 for padding
+        for i, symbol in enumerate(self.atom_types):
+            if symbol in self.atom_vocab:
+                atom_feat[i, self.atom_vocab[symbol]] = 1
+            else:
+                # 未知原子类型
+                atom_feat[i, 0] = 1
 
-        # 边特征填充 - 修复：确保维度一致
-        edge_dim = 5  # 固定边特征维度
-        edge_feat = torch.zeros(max_nodes, max_nodes, edge_dim)
-
-        if len(self.edge_index) > 0 and len(self.edge_index[0]) > 0:
-            # 有边的情况
-            for k, (i, j) in enumerate(zip(self.edge_index[0], self.edge_index[1])):
-                if i < max_nodes and j < max_nodes and k < len(self.edge_features):
-                    # 确保边特征维度正确
-                    feat = self.edge_features[k]
-                    if len(feat) == edge_dim:
-                        edge_feat[i, j] = feat
-                    else:
-                        # 如果维度不对，填充零
-                        edge_feat[i, j] = torch.zeros(edge_dim)
+        # 键类型：使用one-hot编码
+        bond_feat = torch.zeros(max_nodes, max_nodes, len(self.bond_vocab) + 1)  # +1 for no bond
+        for (i, j), bond_type in zip(self.bond_pairs, self.bond_types):
+            if i < max_nodes and j < max_nodes:
+                if bond_type in self.bond_vocab:
+                    bond_feat[i, j, self.bond_vocab[bond_type]] = 1
+                else:
+                    bond_feat[i, j, 0] = 1  # 未知键类型
 
         mask = torch.zeros(max_nodes, dtype=torch.bool)
         mask[:self.n_nodes] = True
 
-        return node_feat, edge_feat, mask, self.n_nodes
+        return atom_feat, bond_feat, mask, self.n_nodes
 
 
 class SubstructureDataset(Dataset):
-    """子结构数据集（修复版）"""
+    """子结构数据集"""
 
     def __init__(self, smiles_list, max_nodes=30):
         self.smiles_list = smiles_list
         self.max_nodes = max_nodes
         self.graphs = []
-        self.edge_dim = 5  # 固定边特征维度
 
         print(f"Processing {len(smiles_list)} molecules...")
-        for smiles in tqdm(smiles_list, desc="Processing molecules"):
+        for smiles in tqdm(smiles_list, desc="Processing"):
             try:
                 graph = MoleculeGraph(smiles, max_nodes)
-                if graph.n_nodes <= max_nodes and graph.n_nodes > 0:
+                if 1 <= graph.n_nodes <= max_nodes:
                     self.graphs.append(graph)
             except Exception as e:
-                print(f"Warning: Failed to process {smiles}: {e}")
                 continue
 
         print(f"Successfully processed {len(self.graphs)} molecules")
+
+        # 获取词汇表大小
+        self.atom_vocab_size = len(self.graphs[0].atom_vocab) + 1 if self.graphs else 2
+        self.bond_vocab_size = len(self.graphs[0].bond_vocab) + 1 if self.graphs else 2
 
     def __len__(self):
         return len(self.graphs)
 
     def __getitem__(self, idx):
         graph = self.graphs[idx]
-        node_feat, edge_feat, mask, n_nodes = graph.to_dense(self.max_nodes)
-
-        # 验证边特征维度
-        if edge_feat.shape[-1] != self.edge_dim:
-            # 修复维度
-            new_edge_feat = torch.zeros(self.max_nodes, self.max_nodes, self.edge_dim)
-            copy_dim = min(edge_feat.shape[-1], self.edge_dim)
-            new_edge_feat[:, :, :copy_dim] = edge_feat[:, :, :copy_dim]
-            edge_feat = new_edge_feat
-
+        atom_feat, bond_feat, mask, n_nodes = graph.to_dense(self.max_nodes)
         return {
-            'node_feat': node_feat,
-            'edge_feat': edge_feat,
+            'atom_feat': atom_feat,  # one-hot编码的原子类型
+            'bond_feat': bond_feat,  # one-hot编码的键类型
             'mask': mask,
             'n_nodes': n_nodes,
             'smiles': graph.smiles
@@ -165,54 +131,43 @@ class SubstructureDataset(Dataset):
 
 
 def collate_graphs(batch):
-    """批处理函数（修复版）"""
-    # 获取批次中最大节点数
-    max_nodes = max([item['node_feat'].shape[0] for item in batch])
-    edge_dim = 5  # 固定边特征维度
+    """批处理函数"""
+    max_nodes = max([item['atom_feat'].shape[0] for item in batch])
 
-    # 统一填充
-    node_feats = []
-    edge_feats = []
+    atom_feats = []
+    bond_feats = []
     masks = []
     n_nodes = []
+    smiles_list = []
 
     for item in batch:
-        node_feat = item['node_feat']
-        edge_feat = item['edge_feat']
+        # 原子特征填充
+        atom_feat = item['atom_feat']
+        padded_atom = torch.zeros(max_nodes, atom_feat.shape[-1])
+        padded_atom[:len(atom_feat)] = atom_feat
+        atom_feats.append(padded_atom)
+
+        # 键特征填充
+        bond_feat = item['bond_feat']
+        padded_bond = torch.zeros(max_nodes, max_nodes, bond_feat.shape[-1])
+        padded_bond[:len(bond_feat), :len(bond_feat)] = bond_feat
+        bond_feats.append(padded_bond)
+
+        # 掩码
         mask = item['mask']
-        n = item['n_nodes']
-
-        # 填充节点特征
-        padded_node = torch.zeros(max_nodes, node_feat.shape[-1])
-        padded_node[:n] = node_feat[:n]
-        node_feats.append(padded_node)
-
-        # 填充边特征 - 修复：确保维度一致
-        padded_edge = torch.zeros(max_nodes, max_nodes, edge_dim)
-        # 只复制有效的边特征
-        if edge_feat.shape[0] > 0 and edge_feat.shape[1] > 0:
-            valid_n = min(n, edge_feat.shape[0], edge_feat.shape[1])
-            if edge_feat.shape[-1] == edge_dim:
-                padded_edge[:valid_n, :valid_n] = edge_feat[:valid_n, :valid_n]
-            else:
-                # 如果边特征维度不对，只复制能复制的部分
-                copy_dim = min(edge_feat.shape[-1], edge_dim)
-                padded_edge[:valid_n, :valid_n, :copy_dim] = edge_feat[:valid_n, :valid_n, :copy_dim]
-        edge_feats.append(padded_edge)
-
-        # 填充掩码
         padded_mask = torch.zeros(max_nodes, dtype=torch.bool)
-        padded_mask[:n] = mask[:n]
+        padded_mask[:len(mask)] = mask
         masks.append(padded_mask)
 
-        n_nodes.append(n)
+        n_nodes.append(item['n_nodes'])
+        smiles_list.append(item['smiles'])
 
     return {
-        'node_feat': torch.stack(node_feats),
-        'edge_feat': torch.stack(edge_feats),
+        'atom_feat': torch.stack(atom_feats),
+        'bond_feat': torch.stack(bond_feats),
         'mask': torch.stack(masks),
         'n_nodes': torch.tensor(n_nodes),
-        'smiles': [item['smiles'] for item in batch]
+        'smiles': smiles_list
     }
 
 def from_json(json_file, filter = 50):
