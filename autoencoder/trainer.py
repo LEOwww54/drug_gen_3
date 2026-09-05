@@ -150,14 +150,15 @@ def train(smiles_list):
     print(f"Bond vocab size: {dataset.bond_vocab_size}")
 
     # 3. 创建自编码器
+    max_nodes = 70  # 提取为变量
     autoencoder = GraphTransformerAutoencoder(
         atom_vocab_size=dataset.atom_vocab_size,
         bond_vocab_size=dataset.bond_vocab_size,
-        d_model=256,
+        d_model=64,
         latent_dim=128,
-        n_heads=4,
-        n_layers=4,
-        max_nodes=70,
+        n_heads=8,
+        n_layers=8,
+        max_nodes=max_nodes,
         dropout=0.1
     )
 
@@ -179,7 +180,7 @@ def train(smiles_list):
     generated = []
     for i in range(10):
         z = torch.randn(1, autoencoder.latent_dim)
-        smiles = autoencoder.decode_to_graph(z)
+        smiles = autoencoder.decode_to_graph(z, max_nodes=max_nodes)  # 添加max_nodes参数
         if smiles:
             generated.append(smiles)
 

@@ -142,11 +142,13 @@ class GraphTransformerAutoencoder(nn.Module):
         self.atom_predictor = nn.Linear(d_model, atom_vocab_size)
         self.bond_predictor = nn.Linear(d_model * 2, bond_vocab_size)
 
-        # 7. 长度预测（用于动态解码）
+        # 7. 长度预测 - 改为分类任务 (one-hot编码)
+        # 预测每个可能长度的概率
         self.length_predictor = nn.Sequential(
             nn.Linear(latent_dim, d_model),
             nn.ReLU(),
-            nn.Linear(d_model, 1)
+            nn.Dropout(dropout),
+            nn.Linear(d_model, max_nodes + 1)  # +1 用于padding/无效长度
         )
 
         self.dropout = nn.Dropout(dropout)
@@ -193,11 +195,14 @@ class GraphTransformerAutoencoder(nn.Module):
         """解码器"""
         B = z.shape[0]
 
-        # 1. 预测长度
+        # 1. 预测长度 (分类任务)
+        length_logits = self.length_predictor(z)  # B × (max_nodes + 1)
+
         if target_length is None:
-            length_pred = self.length_predictor(z).squeeze(-1)
-            target_length = torch.round(torch.exp(length_pred)).clamp(1, self.max_nodes)
-            target_length = target_length.long()
+            # 使用argmax获取预测的长度
+            target_length = length_logits.argmax(dim=-1)  # B
+            # 确保长度在有效范围内
+            target_length = target_length.clamp(1, self.max_nodes)
         else:
             target_length = target_length.long().clamp(1, self.max_nodes)
 
@@ -232,7 +237,7 @@ class GraphTransformerAutoencoder(nn.Module):
         else:
             edge_logits = torch.zeros(B, 0, self.bond_vocab_size, device=z.device)
 
-        return atom_logits, edge_logits, target_length
+        return atom_logits, edge_logits, target_length, length_logits
 
     def forward(self, atom_feat, mask, target_length=None):
         """前向传播"""
@@ -240,7 +245,7 @@ class GraphTransformerAutoencoder(nn.Module):
         z, mu, logvar = self.encode(atom_feat, mask)
 
         # 解码
-        atom_logits, edge_logits, pred_length = self.decode(z, target_length)
+        atom_logits, edge_logits, pred_length, length_logits = self.decode(z, target_length)
 
         return {
             'z': z,
@@ -248,7 +253,8 @@ class GraphTransformerAutoencoder(nn.Module):
             'logvar': logvar,
             'atom_logits': atom_logits,
             'edge_logits': edge_logits,
-            'pred_length': pred_length
+            'pred_length': pred_length,
+            'length_logits': length_logits  # 添加长度logits输出
         }
 
     def encode_smiles(self, smiles, max_nodes=30):
@@ -265,7 +271,11 @@ class GraphTransformerAutoencoder(nn.Module):
     def decode_to_graph(self, z, max_nodes=30):
         """从潜在向量解码为图"""
         with torch.no_grad():
-            atom_logits, edge_logits, pred_length = self.decode(z.unsqueeze(0))
+            # 确保z是2D
+            if z.dim() == 1:
+                z = z.unsqueeze(0)
+
+            atom_logits, edge_logits, pred_length, _ = self.decode(z)
 
             # 获取预测
             n = pred_length.item()
@@ -323,12 +333,13 @@ class GraphAutoencoderLoss(nn.Module):
     只计算原子类型和键类型的重建损失
     """
 
-    def __init__(self, atom_weight=1.0, edge_weight=1.0, length_weight=0.1, kl_weight=0.001):
+    def __init__(self, atom_weight=1.0, edge_weight=1.0, length_weight=0.1, kl_weight=0.001, max_nodes=30):
         super().__init__()
         self.atom_weight = atom_weight
         self.edge_weight = edge_weight
         self.length_weight = length_weight
         self.kl_weight = kl_weight
+        self.max_nodes = max_nodes
 
     def forward(self, pred, target):
         # target: {'atom_feat': atom_feat, 'bond_feat': bond_feat, 'mask': mask, 'n_nodes': n_nodes}
@@ -350,7 +361,7 @@ class GraphAutoencoderLoss(nn.Module):
         # 2. 键类型损失 (交叉熵)
         # 构建目标键类型
         target_bonds = target['bond_feat']  # B × N × N × vocab
-        target_bond_indices = target_bonds.argmax(dim=-1).to(device)   # B × N × N
+        target_bond_indices = target_bonds.argmax(dim=-1).to(device)  # B × N × N
 
         # 只考虑上三角
         edge_indices = []
@@ -364,9 +375,6 @@ class GraphAutoencoderLoss(nn.Module):
         if edge_indices:
             target_edge_types = torch.stack(target_edge_types, dim=1)  # B × num_edges
 
-            # 只计算有效位置的键
-            edge_mask = target_edge_types > 0  # 有键的位置
-
             edge_loss = F.cross_entropy(
                 pred['edge_logits'].permute(0, 2, 1),  # B × vocab × num_edges
                 target_edge_types,
@@ -375,9 +383,18 @@ class GraphAutoencoderLoss(nn.Module):
         else:
             edge_loss = torch.tensor(0.0, device=pred['edge_logits'].device)
 
-        # 3. 长度预测损失
-        target_length = target['n_nodes'].float().to(device)
-        length_loss = F.mse_loss(pred['pred_length'].float(), target_length)
+        # 3. 长度预测损失 - 改为交叉熵 (分类任务)
+        target_length = target['n_nodes'].to(device)  # B
+        # 确保目标长度在有效范围内
+        target_length = target_length.clamp(1, self.max_nodes)
+
+        # 创建one-hot目标
+        # length_logits 的形状是 B × (max_nodes + 1)
+        length_loss = F.cross_entropy(
+            pred['length_logits'],  # B × (max_nodes + 1)
+            target_length,
+            ignore_index=0  # 忽略无效长度 (如果有的话)
+        )
 
         # 4. KL散度
         kl_loss = -0.5 * torch.sum(1 + pred['logvar'] - pred['mu'].pow(2) - pred['logvar'].exp())
