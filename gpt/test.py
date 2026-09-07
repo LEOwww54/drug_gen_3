@@ -69,7 +69,7 @@ class DecoderLayer(nn.Module):
         self.ln2 = nn.LayerNorm(d_model)
         self.ln3 = nn.LayerNorm(d_model)
 
-        if 'protein' in conditional and ('protein_pocket' not in conditional):
+        if 'protein' in conditional:
             self.protein_encoder_conditional = nn.Sequential(
                 nn.Linear(protein_emb_size, emb_size * 2),
                 nn.GELU(),
@@ -78,6 +78,21 @@ class DecoderLayer(nn.Module):
             self.protein_cross_attn_ln_conditional = nn.LayerNorm(emb_size)
             self.protein_cross_attn_conditional = MultiHeadAttention(d_model=d_model, d_k=d_k, d_v=d_v, n_heads=n_heads, p_type=p_type, conditional = conditional)
             self.protein_ffn_conditional = nn.Sequential(
+                nn.Linear(d_model, d_ff),
+                nn.GELU(),
+                nn.Linear(d_ff, emb_size)
+            )
+
+        elif 'pocket' in conditional:
+            self.pocket_encoder_conditional = nn.Sequential(
+                nn.Linear(protein_emb_size, emb_size * 2),
+                nn.GELU(),
+                nn.Linear(emb_size * 2, emb_size)
+            )
+            self.pocket_cross_attn_ln_conditional = nn.LayerNorm(emb_size)
+            self.pocket_cross_attn_conditional = MultiHeadAttention(d_model=d_model, d_k=d_k, d_v=d_v, n_heads=n_heads,
+                                                                     p_type=p_type, conditional=conditional)
+            self.pocket_ffn_conditional = nn.Sequential(
                 nn.Linear(d_model, d_ff),
                 nn.GELU(),
                 nn.Linear(d_ff, emb_size)
@@ -115,7 +130,7 @@ class DecoderLayer(nn.Module):
         dec_outputs = dec_outputs + residual_ffn
         dec_outputs = self.ln3(dec_outputs)
 
-        if protein is not None and 'protein' in self.conditional and ('protein_pocket' not in self.conditional):
+        if protein is not None and 'protein' in self.conditional:
             protein = self.protein_encoder_conditional(protein)
             # residual_cross = dec_outputs
             residual_cross = dec_outputs
@@ -139,7 +154,7 @@ class DecoderLayer(nn.Module):
             residual = dec_outputs
             dec_outputs = self.protein_ffn_conditional(dec_outputs)
             dec_outputs = dec_outputs + residual
-        elif 'protein_pocket' in self.conditional:
+        elif protein is not None and pocket_mask is not None and 'protein_pocket' in self.conditional:
             protein = self.protein_pocket_encoder_conditional(protein)
             residual_cross = dec_outputs
 

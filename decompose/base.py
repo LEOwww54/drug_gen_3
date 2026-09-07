@@ -134,6 +134,9 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
             props.append(frag['prop'])
         pass
 
+    import json
+    with open("stru_data.json", "w", encoding="utf-8") as f:
+        json.dump(frags_type, f, ensure_ascii=False, indent=4)
     if statistic_only:
         return None, None, None, None, frags_type
     else:
