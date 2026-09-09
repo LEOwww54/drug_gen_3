@@ -170,7 +170,7 @@ def collate_graphs(batch):
         'smiles': smiles_list
     }
 
-def from_json(json_file, filter = 50):
+def from_json(json_file, filter = 0):
     with open(json_file, 'r') as f:
         json_data = json.load(f)
 

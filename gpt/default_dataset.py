@@ -25,4 +25,4 @@ def get_frag_default_dataloader_ZINC_refined_pkl(token_path, s1):
 
     return get_frag_dataloader_without_split(token_fun=token_fun_2, tokenizer_=tokenizer__, train_file=train_path,
                                              test_file=test_path,
-                                             batch_size=50, multiset=1), tokenizer__
+                                             batch_size=100, multiset=1), tokenizer__

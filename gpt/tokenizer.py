@@ -10,7 +10,7 @@ from ZINC_refined.dataprocess import mol_decomp_mp_ZINC_refined
 
 def get_token(source):
     print(f"getting token from smiles")
-    n_core = 10
+    n_core = 60
 
     mol_dict = {
         'ZINC_250K':mol_decomp_mp_ZINC_250K_pkl,

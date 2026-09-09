@@ -396,7 +396,7 @@ class VirtualAtomConnectionProcessor:
 
             token.extend(conn_info)
 
-            #token.append(atom_sym)
+            token.append(atom_sym)
 
             if atom.IsInRing():
                 token.append('<r>')
