@@ -1,507 +1,678 @@
-
+import math
 import time
-
+import numpy as np
+import torch
+import torch.nn as nn
 import torch.nn.functional as F
-
-import gpt.base_model as base_model
-
-from gpt.base_model import *
+from torch import optim
 import torch.nn.init as init
 
+import gpt.base_model as base_model
+from gpt.base_model import *
 from gpt.dataset import *
 
+
+def _uses_protein(conditional):
+    conditional = set(conditional)
+    return bool({"protein", "pocket", "protein_pocket"} & conditional)
+
+
 def get_attn_pad_mask(seq_q, seq_k):
-    '''
-    seq_q: [batch_size, seq_len]
-    seq_k: [batch_size, seq_len]
-    seq_len could be src_len or it could be tgt_len
-    seq_len in seq_q and seq_len in seq_k maybe not equal
-    '''
+    """Padding mask: [B,Lq,Lk], True means masked."""
     batch_size, len_q = seq_q.size()
-    batch_size, len_k = seq_k.size()
-    # eq(zero) is PAD token
-    pad_attn_mask = seq_k.data.eq(constant.PAD_TOKEN_ID).unsqueeze(1)  # [batch_size, 1, len_k], True is masked
-    return pad_attn_mask.expand(batch_size, len_q, len_k)  # [batch_size, len_q, len_k]
+    _, len_k = seq_k.size()
+    pad_attn_mask = seq_k.eq(constant.PAD_TOKEN_ID).unsqueeze(1)
+    return pad_attn_mask.expand(batch_size, len_q, len_k)
 
 
 def get_attn_subsequence_mask(seq):
-    '''
-    seq: [batch_size, tgt_len]
-    '''
-    attn_shape = [seq.size(0), seq.size(1), seq.size(1)]
-    subsequence_mask = np.triu(np.ones(attn_shape), k=1)  # Upper triangular matrix
-    subsequence_mask = torch.from_numpy(subsequence_mask).byte()
-    subsequence_mask = subsequence_mask.to(device)
-    return subsequence_mask  # [batch_size, tgt_len, tgt_len]
+    """Causal mask: [B,L,L], True means masked."""
+    seq_len = seq.size(1)
+    mask = torch.triu(
+        torch.ones(seq_len, seq_len, dtype=torch.bool, device=seq.device),
+        diagonal=1,
+    )
+    return mask.unsqueeze(0).expand(seq.size(0), -1, -1)
 
-def get_key_padding_mask(protein_length, smiles, focus_seq = None):
+
+def get_key_padding_mask(protein_length, smiles, focus_seq=None):
+    """
+    Build molecule-query x protein-key mask.
+
+    focus_seq follows the original code convention: True means the residue is
+    masked in the pocket-focused channel, False means it is retained.
+    """
     if protein_length is None:
-        return None
+        return None, None
+
+    if not torch.is_tensor(protein_length):
+        protein_length = torch.as_tensor(protein_length, device=smiles.device)
+    protein_length = protein_length.to(smiles.device).long()
+
     batch_size = protein_length.size(0)
-    max_protein_length = protein_length.max()
+    max_protein_length = int(protein_length.max().item())
+    len_q = smiles.size(1)
 
-    key_padding_mask = smiles.eq(constant.PAD_TOKEN_ID)
-    key_padding_mask = key_padding_mask.unsqueeze(-1).repeat(1, 1, max_protein_length)
+    residue_index = torch.arange(max_protein_length, device=smiles.device).view(1, 1, -1)
+    length_mask = residue_index >= protein_length.view(batch_size, 1, 1)
+    length_mask = length_mask.expand(batch_size, len_q, max_protein_length)
 
+    query_pad = smiles.eq(constant.PAD_TOKEN_ID).unsqueeze(-1)
+    key_padding_mask = length_mask | query_pad
+
+    focus_mask = None
     if focus_seq is not None:
-        focus_mask = focus_seq.unsqueeze(1).repeat(1, key_padding_mask.size(1), 1).to(device)
+        if not torch.is_tensor(focus_seq):
+            focus_seq = torch.as_tensor(focus_seq, device=smiles.device)
+        focus_seq = focus_seq.to(smiles.device).bool()
+        focus_mask = focus_seq.unsqueeze(1).expand(batch_size, len_q, -1)
         focus_mask = focus_mask | key_padding_mask
-        focus_mask.to(device)
-    else:
-        focus_mask = None
 
-    for i in range(batch_size):
-        key_padding_mask[i,:, protein_length[i]:] = True
-
-    return key_padding_mask.to(device), focus_mask
+    return key_padding_mask, focus_mask
 
 
 class DecoderLayer(nn.Module):
     def __init__(self, prop_len, p_type, conditional):
-        super(DecoderLayer, self).__init__()
+        super().__init__()
         self.p_type = p_type
-        self.conditional = conditional
-        self.dec_self_attn = MultiHeadAttention(d_model=d_model, d_k=d_k, d_v=d_v, n_heads=n_heads, p_type=p_type, conditional = conditional)
-        # self.dec_enc_attn = MultiHeadAttention()
-        self.pos_ffn = PoswiseFeedForwardNet(d_model=d_model,d_ff=d_ff,p_type=p_type, conditional = conditional)
+        self.conditional = list(conditional)
+
+        # Intrinsic molecular properties act only on molecular self-attention.
+        self.dec_self_attn = MultiHeadAttention(
+            d_model=d_model,
+            d_k=d_k,
+            d_v=d_v,
+            n_heads=n_heads,
+            p_type=p_type,
+            conditional=self.conditional,
+            attention_mode="self",
+        )
+        self.pos_ffn = PoswiseFeedForwardNet(
+            d_model=d_model,
+            d_ff=d_ff,
+            p_type=p_type,
+            conditional=self.conditional,
+        )
 
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
         self.ln3 = nn.LayerNorm(d_model)
 
-        if 'protein' in conditional:
+        # Extrinsic biological conditions use heterogeneous cross-attention.
+        if "protein" in self.conditional:
             self.protein_encoder_conditional = nn.Sequential(
                 nn.Linear(protein_emb_size, emb_size * 2),
                 nn.GELU(),
-                nn.Linear(emb_size * 2, emb_size)
+                nn.Linear(emb_size * 2, emb_size),
             )
             self.protein_cross_attn_ln_conditional = nn.LayerNorm(emb_size)
-            self.protein_cross_attn_conditional = MultiHeadAttention(d_model=d_model, d_k=d_k, d_v=d_v, n_heads=n_heads, p_type=p_type, conditional = conditional)
+            self.protein_cross_attn_conditional = MultiHeadAttention(
+                d_model=d_model,
+                d_k=d_k,
+                d_v=d_v,
+                n_heads=n_heads,
+                p_type=p_type,
+                conditional=self.conditional,
+                attention_mode="cross",
+            )
             self.protein_ffn_conditional = nn.Sequential(
                 nn.Linear(d_model, d_ff),
                 nn.GELU(),
-                nn.Linear(d_ff, emb_size)
+                nn.Dropout(0.1),
+                nn.Linear(d_ff, emb_size),
             )
 
-        elif 'pocket' in conditional:
+        elif "pocket" in self.conditional:
             self.pocket_encoder_conditional = nn.Sequential(
                 nn.Linear(protein_emb_size, emb_size * 2),
                 nn.GELU(),
-                nn.Linear(emb_size * 2, emb_size)
+                nn.Linear(emb_size * 2, emb_size),
             )
             self.pocket_cross_attn_ln_conditional = nn.LayerNorm(emb_size)
-            self.pocket_cross_attn_conditional = MultiHeadAttention(d_model=d_model, d_k=d_k, d_v=d_v, n_heads=n_heads,
-                                                                     p_type=p_type, conditional=conditional)
+            self.pocket_cross_attn_conditional = MultiHeadAttention(
+                d_model=d_model,
+                d_k=d_k,
+                d_v=d_v,
+                n_heads=n_heads,
+                p_type=p_type,
+                conditional=self.conditional,
+                attention_mode="cross",
+            )
             self.pocket_ffn_conditional = nn.Sequential(
                 nn.Linear(d_model, d_ff),
                 nn.GELU(),
-                nn.Linear(d_ff, emb_size)
+                nn.Dropout(0.1),
+                nn.Linear(d_ff, emb_size),
             )
 
-        elif 'protein_pocket' in conditional:
+        elif "protein_pocket" in self.conditional:
             self.protein_pocket_encoder_conditional = nn.Sequential(
                 nn.Linear(protein_emb_size, emb_size * 2),
                 nn.GELU(),
-                nn.Linear(emb_size * 2, emb_size)
+                nn.Linear(emb_size * 2, emb_size),
             )
-
-            self.protein_pocket_cross_attn_conditional = DualChannelCrossAttention(d_model=d_model, d_k=d_k, d_v=d_v, n_heads=n_heads,
-                                                                     p_type=p_type, conditional=conditional)
-
-
-        # self.prop_condition_gate = nn.Linear(emb_size * 2, emb_size)
-        return
+            self.protein_pocket_cross_attn_conditional = DualChannelCrossAttention(
+                d_model=d_model,
+                d_k=d_k,
+                d_v=d_v,
+                n_heads=n_heads,
+                p_type=p_type,
+                conditional=self.conditional,
+            )
 
     def forward(self, dec_inputs, dec_self_attn_mask, protein, protein_padding_mask, pocket_mask, prop):
-        '''
-        dec_inputs: [batch_size, tgt_len, d_model]
-        dec_self_attn_mask: [batch_size, tgt_len, tgt_len]
-        '''
-        # dec_outputs: [batch_size, tgt_len, d_model], dec_self_attn: [batch_size, n_heads, tgt_len, tgt_len]
+        # Pre-LN molecular self-attention.
+        x = dec_inputs
+        x_norm = self.ln1(x)
+        self_out, dec_self_attn = self.dec_self_attn(
+            x_norm, x_norm, x_norm, dec_self_attn_mask, prop
+        )
+        x = x + self_out
 
-        dec_inputs = self.ln1(dec_inputs)
-        residual_cross = dec_inputs
-        dec_outputs, dec_self_attn = self.dec_self_attn(dec_inputs, dec_inputs, dec_inputs, dec_self_attn_mask, prop)
-        dec_outputs = dec_outputs + residual_cross
+        # Pre-LN property-conditioned FFN (FiLM modulation).
+        x_norm = self.ln2(x)
+        x = x + self.pos_ffn(x_norm, prop)
+        x = self.ln3(x)
 
-        dec_outputs = self.ln2(dec_outputs)
-        residual_ffn = dec_outputs
-        dec_outputs = self.pos_ffn(dec_outputs, prop)  # [batch_size, tgt_len, d_model]
-        dec_outputs = dec_outputs + residual_ffn
-        dec_outputs = self.ln3(dec_outputs)
-
-        if protein is not None and 'protein' in self.conditional:
-            protein = self.protein_encoder_conditional(protein)
-            # residual_cross = dec_outputs
-            residual_cross = dec_outputs
-            #x_cross = self.protein_cross_attn_ln(dec_outputs)
-            x_cross = self.protein_cross_attn_ln_conditional(dec_outputs)
-
-            # 应用Cross-Attention
+        # Cross-attention never uses a Q-K metric across heterogeneous spaces.
+        if protein is not None and "protein" in self.conditional:
+            protein_encoded = self.protein_encoder_conditional(protein)
+            residual = x
+            q = self.protein_cross_attn_ln_conditional(x)
             cross_output, _ = self.protein_cross_attn_conditional(
-                x_cross,
-                protein,
-                protein,
-                protein_padding_mask
+                q, protein_encoded, protein_encoded, protein_padding_mask, None
             )
+            x = residual + cross_output
+            x = x + self.protein_ffn_conditional(x)
 
-            # gate_input = torch.cat([x_cross, cross_output], dim=-1)
-            # gate = torch.sigmoid(self.protein_condition_gate(gate_input))
-            # conditioned = residual_cross + gate * cross_output
-            conditioned = residual_cross + cross_output
-            dec_outputs = conditioned
+        elif protein is not None and "pocket" in self.conditional:
+            protein_encoded = self.pocket_encoder_conditional(protein)
+            residual = x
+            q = self.pocket_cross_attn_ln_conditional(x)
+            # In pocket-only mode, use pocket_mask if available, otherwise the
+            # normal protein padding mask.
+            cross_mask = pocket_mask if pocket_mask is not None else protein_padding_mask
+            cross_output, _ = self.pocket_cross_attn_conditional(
+                q, protein_encoded, protein_encoded, cross_mask, None
+            )
+            x = residual + cross_output
+            x = x + self.pocket_ffn_conditional(x)
 
-            residual = dec_outputs
-            dec_outputs = self.protein_ffn_conditional(dec_outputs)
-            dec_outputs = dec_outputs + residual
-        elif protein is not None and pocket_mask is not None and 'protein_pocket' in self.conditional:
-            protein = self.protein_pocket_encoder_conditional(protein)
-            residual_cross = dec_outputs
-
+        elif protein is not None and pocket_mask is not None and "protein_pocket" in self.conditional:
+            protein_encoded = self.protein_pocket_encoder_conditional(protein)
+            residual = x
             cross_output, _ = self.protein_pocket_cross_attn_conditional(
-                dec_outputs,
-                protein,
-                protein,
+                x,
+                protein_encoded,
+                protein_encoded,
                 protein_padding_mask,
-                pocket_mask
+                pocket_mask,
+                None,
             )
+            x = residual + cross_output
 
-            conditioned = residual_cross + cross_output
-            dec_outputs = conditioned
+        return x, dec_self_attn
 
-        return dec_outputs, dec_self_attn
 
 class Decoder(nn.Module):
     def __init__(self, vocab_size, prop_len, p_type, conditional):
-        super(Decoder, self).__init__()
+        super().__init__()
         self.p_type = p_type
-        self.conditional = conditional
+        self.conditional = list(conditional)
         self.tgt_emb = nn.Embedding(vocab_size, d_model).to(device)
         self.pos_emb = base_model.PositionalEncoding(d_model=d_model, max_len=max_pos).to(device)
-        # self.pos_emb = nn.Embedding(max_pos, d_model).to(device)
-        self.layers = nn.ModuleList([DecoderLayer(prop_len, p_type=self.p_type, conditional=self.conditional).to(device) for _ in range(n_layers)])
+        self.layers = nn.ModuleList(
+            [
+                DecoderLayer(prop_len, p_type=self.p_type, conditional=self.conditional).to(device)
+                for _ in range(n_layers)
+            ]
+        )
         self.dropout = nn.Dropout(p=0.1)
         self.prop_len = prop_len
 
-
-        if 'prop' in conditional:
-            self.prop_emb_conditional = nn.Sequential(
-                    nn.Linear(prop_len, prop_len),
-                )
+        # A single shared encoder is used by all transformer blocks.
+        if "prop" in self.conditional:
+            self.prop_encoder_conditional = base_model.PropertyEncoder(
+                prop_len=prop_len,
+                d_model=d_model,
+                hidden_dim=max(64, min(d_model, 256)),
+                dropout=0.1,
+            )
+        else:
+            self.prop_encoder_conditional = None
 
     def forward(self, dec_inputs, protein, protein_length, pocket, prop):
-        '''
-        dec_inputs: [batch_size, tgt_len]
-        '''
-        dec_outputs = self.tgt_emb(dec_inputs)  # [batch_size, tgt_len, d_model]
+        dec_outputs = self.tgt_emb(dec_inputs)
         dec_outputs = dec_outputs + self.pos_emb(dec_outputs)
         dec_outputs = self.dropout(dec_outputs)
 
-        dec_self_attn_pad_mask = get_attn_pad_mask(dec_inputs, dec_inputs)  # [batch_size, tgt_len, tgt_len]
-        dec_self_attn_subsequence_mask = get_attn_subsequence_mask(dec_inputs)  # [batch_size, tgt_len, tgt_len]
-        dec_self_attn_mask = torch.gt((dec_self_attn_pad_mask + dec_self_attn_subsequence_mask),
-                                      0)  # [batch_size, tgt_len, tgt_len]
+        pad_mask = get_attn_pad_mask(dec_inputs, dec_inputs)
+        causal_mask = get_attn_subsequence_mask(dec_inputs)
+        final_mask = pad_mask | causal_mask
 
-        # K = dec_outputs.clone()
-        final_mask = dec_self_attn_mask.clone()
+        prop_context = None
+        if self.prop_encoder_conditional is not None and prop is not None:
+            prop_context = self.prop_encoder_conditional(prop)
 
-        if 'prop' in self.conditional and prop is not None:
-            prop = self.prop_emb_conditional(prop)
-
-        if 'protein' in self.conditional and protein is not None:
-            enc_key_padding_mask, pocket_mask = get_key_padding_mask(protein_length, dec_inputs, pocket)
+        if _uses_protein(self.conditional) and protein is not None:
+            enc_key_padding_mask, pocket_mask = get_key_padding_mask(
+                protein_length, dec_inputs, pocket
+            )
         else:
             enc_key_padding_mask = None
             pocket_mask = None
 
         dec_self_attns = []
         for layer in self.layers:
-            # dec_outputs: [batch_size, tgt_len, d_model], dec_self_attn: [batch_size, n_heads, tgt_len, tgt_len], dec_enc_attn: [batch_size, h_heads, tgt_len, src_len]
-            dec_outputs, dec_self_attn = layer(dec_outputs, final_mask, protein, enc_key_padding_mask, pocket_mask, prop)
+            dec_outputs, dec_self_attn = layer(
+                dec_outputs,
+                final_mask,
+                protein,
+                enc_key_padding_mask,
+                pocket_mask,
+                prop_context,
+            )
             dec_self_attns.append(dec_self_attn)
 
         return dec_outputs, dec_self_attns
 
 
 class GPT(nn.Module):
-    def __init__(self, vocab_size=constant.vocab_size, prop_len=constant.prop_len, p_type = '', conditional=['unconditional']):
-        super(GPT, self).__init__()
-        self.decoder = Decoder(vocab_size, prop_len, p_type=p_type, conditional=conditional)
+    def __init__(
+        self,
+        vocab_size=constant.vocab_size,
+        prop_len=constant.prop_len,
+        p_type="",
+        conditional=("unconditional",),
+    ):
+        super().__init__()
+        self.conditional = list(conditional)
+        self.prop_len = prop_len
+        self.decoder = Decoder(vocab_size, prop_len, p_type=p_type, conditional=self.conditional)
         self.projection = nn.Linear(d_model, vocab_size).to(device)
+
+        # Auxiliary head strengthens continuous-property awareness without
+        # changing GPT.forward's four return values.
+        if "prop" in self.conditional:
+            self.property_head = nn.Sequential(
+                nn.Linear(d_model, max(64, d_model // 2)),
+                nn.GELU(),
+                nn.Dropout(0.1),
+                nn.Linear(max(64, d_model // 2), prop_len),
+            )
+        else:
+            self.property_head = None
+
+        self.property_loss_weight = float(getattr(constant, "property_loss_weight", 0.1))
+
         self.apply(self._init_weights)
+        self._reset_identity_conditioning()
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
-            init.kaiming_uniform_(m.weight, a=0, mode='fan_in', nonlinearity='relu')
+            init.kaiming_uniform_(m.weight, a=0, mode="fan_in", nonlinearity="relu")
             if m.bias is not None:
                 init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Embedding):
+            nn.init.normal_(m.weight, mean=0.0, std=0.02)
+
+    def _reset_identity_conditioning(self):
+        # The generic initialization above would otherwise overwrite the special
+        # zero initialization required for smooth fine-tuning from an old GPT.
+        for module in self.modules():
+            if isinstance(module, base_model.PropertyAdaptiveScaledDotProductAttention):
+                nn.init.zeros_(module.metric_generator[-1].weight)
+                nn.init.zeros_(module.metric_generator[-1].bias)
+            if isinstance(module, base_model.PoswiseFeedForwardNet) and getattr(module, "use_prop", False):
+                nn.init.zeros_(module.film[-1].weight)
+                nn.init.zeros_(module.film[-1].bias)
+            if isinstance(module, base_model.MultiHeadAttention) and getattr(module, "use_low_rank_adapter", False):
+                nn.init.zeros_(module.q_up.weight)
+                nn.init.zeros_(module.k_up.weight)
+                nn.init.zeros_(module.v_up.weight)
 
     def forward(self, dec_inputs, protein, protein_length, pocket, prop):
-        """
-        dec_inputs: [batch_size, tgt_len]
-        """
-
-        # dec_outpus: [batch_size, tgt_len, d_model], dec_self_attns: [n_layers, batch_size, n_heads, tgt_len, tgt_len]
-        dec_outputs, dec_self_attns = self.decoder(dec_inputs, protein, protein_length, pocket, prop)
-        # dec_logits: [batch_size, tgt_len, tgt_vocab_size]
+        # Output signature is unchanged.
+        dec_outputs, dec_self_attns = self.decoder(
+            dec_inputs, protein, protein_length, pocket, prop
+        )
         dec_logits = self.projection(dec_outputs)
-        return dec_logits.view(-1, dec_logits.size(-1)), dec_self_attns, dec_logits, dec_outputs
+        return (
+            dec_logits.view(-1, dec_logits.size(-1)),
+            dec_self_attns,
+            dec_logits,
+            dec_outputs,
+        )
 
-    def temperature_sampling(model, tokenizer, input_ids, protein, protein_length, pocket, prop, temperature=0.8, max_length=constant.max_pos):
+    def predict_properties(self, hidden_states, token_ids):
+        """Predict molecule-level properties from masked mean-pooled hidden states."""
+        if self.property_head is None:
+            return None
+        valid = token_ids.ne(constant.PAD_TOKEN_ID).unsqueeze(-1).to(hidden_states.dtype)
+        denom = valid.sum(dim=1).clamp_min(1.0)
+        pooled = (hidden_states * valid).sum(dim=1) / denom
+        return self.property_head(pooled)
+
+    @staticmethod
+    def _filter_finished(input_ids, next_token, protein, protein_length, pocket, prop, result):
+        finished = next_token.squeeze(-1).eq(constant.EOS_TOKEN_ID)
+        if finished.any():
+            finished_idx = finished.nonzero(as_tuple=False).squeeze(-1)
+            for idx in finished_idx.tolist():
+                result.append(input_ids[idx].detach().cpu().tolist())
+
+        keep = ~finished
+        if keep.any():
+            input_ids = input_ids[keep]
+            if prop is not None:
+                prop = prop[keep]
+            if protein is not None:
+                protein = protein[keep]
+            if protein_length is not None:
+                protein_length = protein_length[keep]
+            if pocket is not None:
+                pocket = pocket[keep]
+            return input_ids, protein, protein_length, pocket, prop, False
+
+        return input_ids[:0], protein, protein_length, pocket, prop, True
+
+    def temperature_sampling(
+        model,
+        tokenizer,
+        input_ids,
+        protein,
+        protein_length,
+        pocket,
+        prop,
+        temperature=0.8,
+        max_length=constant.max_pos,
+    ):
+        model.eval()
         with torch.no_grad():
             result = []
             for _ in range(max_length):
+                if input_ids.size(0) == 0:
+                    break
                 outputs = model(input_ids, protein, protein_length, pocket, prop)
-                next_token_logits = outputs[2][:, -1, :]
-
-                # 应用温度参数
-                next_token_logits = next_token_logits / temperature
-
-                # 从调整后的分布中采样
+                next_token_logits = outputs[2][:, -1, :] / max(float(temperature), 1e-6)
                 probs = F.softmax(next_token_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
-
                 input_ids = torch.cat([input_ids, next_token], dim=-1)
 
-                end_sign = True
-                remove_id = []
-
-                for i in range(next_token.size(0)):
-                    if not next_token[i].item() == constant.EOS_TOKEN_ID:
-                        end_sign = False
-                    else:
-                        result.append(input_ids[i].cpu().detach().numpy().tolist())
-                        remove_id.append(i)
-                if end_sign:
+                input_ids, protein, protein_length, pocket, prop, all_done = model._filter_finished(
+                    input_ids, next_token, protein, protein_length, pocket, prop, result
+                )
+                if all_done:
                     break
-                else:
-                    remove_id = sorted(remove_id, reverse=True)
-                    for i in remove_id:
-                        if prop is not None:
-                            prop = prop[1:]
-                        if protein is not None:
-                            protein = protein[1:]
-                            protein_length = protein_length[1:]
-                        if pocket is not None:
-                            pocket = pocket[1:]
-                        if i < input_ids.size(0) - 1:
-                            input_ids = torch.cat((input_ids[:i], input_ids[i+1:]), dim=0)
-                        else:
-                            input_ids = input_ids[:i]
 
-        ## input_ids = input_ids.cpu().detach().numpy().tolist()
-        return [tokenizer.decode(i) for i in result]
+            # Preserve unfinished samples rather than silently dropping them.
+            for row in input_ids:
+                result.append(row.detach().cpu().tolist())
+            return [tokenizer.decode(i) for i in result]
 
-    def top_k_sampling(model, tokenizer, input_ids, protein, protein_length,prop, k=40, max_length=constant.max_pos):
+    def top_k_sampling(
+        model,
+        tokenizer,
+        input_ids,
+        protein,
+        protein_length,
+        prop,
+        k=40,
+        max_length=constant.max_pos,
+        pocket=None,
+    ):
+        model.eval()
         with torch.no_grad():
             result = []
             for _ in range(max_length):
-                outputs = model(input_ids, protein, protein_length, prop)
+                if input_ids.size(0) == 0:
+                    break
+                outputs = model(input_ids, protein, protein_length, pocket, prop)
                 next_token_logits = outputs[2][:, -1, :]
-
-                # 获取top-k个token
-                top_k_logits, top_k_indices = torch.topk(next_token_logits, k, dim=-1)
-
-                # 从top-k中采样
+                k_eff = min(int(k), next_token_logits.size(-1))
+                top_k_logits, top_k_indices = torch.topk(next_token_logits, k_eff, dim=-1)
                 probs = F.softmax(top_k_logits, dim=-1)
                 next_token_index = torch.multinomial(probs, num_samples=1)
                 next_token = top_k_indices.gather(-1, next_token_index)
-
                 input_ids = torch.cat([input_ids, next_token], dim=-1)
 
-                end_sign = True
-                remove_id = []
-
-                for i in range(next_token.size(0)):
-                    if not next_token[i].item() == constant.EOS_TOKEN_ID:
-                        end_sign = False
-                    else:
-                        result.append(input_ids[i].cpu().detach().numpy().tolist())
-                        remove_id.append(i)
-                if end_sign:
+                input_ids, protein, protein_length, pocket, prop, all_done = model._filter_finished(
+                    input_ids, next_token, protein, protein_length, pocket, prop, result
+                )
+                if all_done:
                     break
-                else:
-                    remove_id = sorted(remove_id, reverse=True)
-                    for i in remove_id:
-                        if i < input_ids.size(0) - 1:
-                            input_ids = torch.cat((input_ids[:i], input_ids[i + 1:]), dim=0)
-                        else:
-                            input_ids = input_ids[:i]
 
-                ## input_ids = input_ids.cpu().detach().numpy().tolist()
+            for row in input_ids:
+                result.append(row.detach().cpu().tolist())
             return [tokenizer.decode(i) for i in result]
 
-    def greedy_decoder(self, dec_input, protein, protein_length):
-
+    def greedy_decoder(self, dec_input, protein, protein_length, pocket=None, prop=None):
         terminal = False
-        start_dec_len = len(dec_input[0])
-        # 一直预测下一个单词，直到预测到"<sep>"结束，如果一直不到"<sep>"，则根据长度退出循环，并在最后加上”<sep>“字符
+        start_dec_len = dec_input.size(1)
         while not terminal:
-            if len(dec_input[0]) - start_dec_len > 100:
-                next_symbol = constant.EOS_TOKEN_ID
-                dec_input = torch.cat(
-                    [dec_input.detach(), torch.tensor([[next_symbol]], dtype=dec_input.dtype, device=device)], -1)
+            if dec_input.size(1) - start_dec_len > 100:
+                next_symbol = torch.tensor(
+                    [[constant.EOS_TOKEN_ID]], dtype=dec_input.dtype, device=dec_input.device
+                )
+                dec_input = torch.cat([dec_input.detach(), next_symbol], dim=-1)
                 break
-            dec_outputs, _ = self.decoder(dec_input, protein, protein_length)
-            projected = self.projection(dec_outputs)
-            prob = projected.squeeze(0).max(dim=-1, keepdim=False)[1]
-            next_word = prob.data[-1]
-            next_symbol = next_word
-            if next_symbol == constant.EOS_TOKEN_ID:
-                terminal = True
 
-            dec_input = torch.cat(
-                [dec_input.detach(), torch.tensor([[next_symbol]], dtype=dec_input.dtype, device=device)], -1)
-
+            outputs = self(dec_input, protein, protein_length, pocket, prop)
+            next_symbol = outputs[2][:, -1, :].argmax(dim=-1, keepdim=True)
+            terminal = bool(next_symbol.eq(constant.EOS_TOKEN_ID).all())
+            dec_input = torch.cat([dec_input.detach(), next_symbol], dim=-1)
         return dec_input
 
-    def answer(self, sentence, protein, tokenizer, prop=None, method='greedy', batch=1, model='t12_35M', pocket=None, arg=0.8):
+    def answer(
+        self,
+        sentence,
+        protein,
+        tokenizer,
+        prop=None,
+        method="greedy",
+        batch=1,
+        model="t12_35M",
+        pocket=None,
+        arg=0.8,
+    ):
         dec_input = tokenizer.encode(sentence).ids
         dec_input = torch.tensor(dec_input, dtype=torch.long, device=device).repeat(batch, 1)
 
         if protein is not None:
-            if model == 't12_35M':
+            if model == "t12_35M":
                 param = ESM.load_model(model)
-                protein_rep = ESM.protein2vector([(protein, '')], param=param)
+                protein_rep = ESM.protein2vector([(protein, "")], param=param)
                 protein = protein_rep[2]
                 protein_length = protein_rep[1]
-            elif model == 'rACSF':
+            elif model == "rACSF":
                 from gpt.rACSF import cal_rACSF
+
                 protein_rep = cal_rACSF(protein)[0]
                 protein = protein_rep
                 protein_length = len(protein_rep)
             else:
-                protein = protein
                 protein_length = len(protein)
-            pocket = [i - 1 not in pocket for i in range(protein_length)]
 
+            # Keep the original external pocket convention: pocket contains
+            # 1-based residue indices to retain in the local channel.
+            if pocket is not None:
+                pocket_mask = [i + 1 not in pocket for i in range(protein_length)]
+            else:
+                pocket_mask = [False for _ in range(protein_length)]
 
             protein = torch.tensor(protein, device=device, dtype=torch.float)
             protein = protein.unsqueeze(0).repeat(batch, 1, 1)
-            protein_length = torch.tensor(protein_length, dtype=torch.long, device=device)
-            protein_length = protein_length.repeat(batch)
-            pocket = torch.tensor(pocket, device=device, dtype=torch.bool).unsqueeze(0).repeat(batch, 1)
+            protein_length = torch.tensor(protein_length, dtype=torch.long, device=device).repeat(batch)
+            pocket = torch.tensor(pocket_mask, device=device, dtype=torch.bool).unsqueeze(0).repeat(batch, 1)
         else:
             protein_length = None
+            pocket = None
+
         if prop is not None:
-            prop = torch.tensor(prop, dtype=torch.float, device=device).repeat(batch, 1)
+            prop = torch.as_tensor(prop, dtype=torch.float, device=device)
+            if prop.dim() == 1:
+                prop = prop.unsqueeze(0)
+            if prop.size(0) == 1 and batch > 1:
+                prop = prop.repeat(batch, 1)
 
-        if method == 'greedy':
-            output = self.greedy_decoder(dec_input,protein=protein,protein_length=protein_length).squeeze(0).cpu().numpy().tolist()
-            output = tokenizer.decode(output)
-            answer = output
-            return answer
-        elif method == 'temperature':
-            output = self.temperature_sampling(input_ids=dec_input, tokenizer=tokenizer,protein=protein,protein_length=protein_length, prop=prop, temperature=arg, pocket=pocket)
-            return output
-        elif method == 'top_k':
-            output = self.top_k_sampling(input_ids=dec_input, tokenizer=tokenizer,protein=protein,protein_length=protein_length, prop=prop)
-            return output
+        if method == "greedy":
+            # Preserve the original single-string greedy return convention.
+            output = self.greedy_decoder(
+                dec_input[:1],
+                protein=protein[:1] if protein is not None else None,
+                protein_length=protein_length[:1] if protein_length is not None else None,
+                pocket=pocket[:1] if pocket is not None else None,
+                prop=prop[:1] if prop is not None else None,
+            ).squeeze(0).cpu().tolist()
+            return tokenizer.decode(output)
+        elif method == "temperature":
+            return self.temperature_sampling(
+                input_ids=dec_input,
+                tokenizer=tokenizer,
+                protein=protein,
+                protein_length=protein_length,
+                prop=prop,
+                temperature=arg,
+                pocket=pocket,
+            )
+        elif method == "top_k":
+            return self.top_k_sampling(
+                input_ids=dec_input,
+                tokenizer=tokenizer,
+                protein=protein,
+                protein_length=protein_length,
+                prop=prop,
+                pocket=pocket,
+            )
+        return ""
 
-        return ''
+
+def _prepare_batch_conditionals(protein, protein_len, pocket, props, conditional):
+    if not _uses_protein(conditional):
+        protein = None
+        protein_len = None
+        pocket = None
+    if "prop" not in conditional:
+        props = None
+
+    if protein is not None:
+        protein = torch.as_tensor(protein, dtype=torch.float, device=device)
+    if protein_len is not None:
+        protein_len = torch.as_tensor(protein_len, dtype=torch.long, device=device)
+    if pocket is not None:
+        pocket = torch.as_tensor(pocket, dtype=torch.bool, device=device)
+    if props is not None:
+        props = torch.as_tensor(props, dtype=torch.float, device=device)
+    return protein, protein_len, pocket, props
 
 
-def train_step(model, data_loader, optimizer, criterion, clip=1, print_every=None, vs=0, conditional=['unconditional']):
+def _compute_loss(model, criterion, outputs, dec_outputs, dec_inputs, props):
+    token_loss = criterion(outputs[0], dec_outputs.view(-1))
+    if props is None or model.property_head is None:
+        return token_loss, None
+
+    pred_prop = model.predict_properties(outputs[3], dec_inputs)
+    prop_loss = F.mse_loss(pred_prop, props)
+    total_loss = token_loss + model.property_loss_weight * prop_loss
+    return total_loss, prop_loss
+
+
+def train_step(model, data_loader, optimizer, criterion, clip=1, print_every=None, vs=0, conditional=("unconditional",)):
     if data_loader is None:
         return -1
-
     if print_every == 0:
         print_every = 1
 
-    print_loss_total = 0  # 每次打印都重置
-
-    epoch_loss = 0
+    model.train()
+    print_loss_total = 0.0
+    epoch_loss = 0.0
 
     for i, (dec_inputs, dec_outputs, protein, protein_len, pocket, props) in enumerate(tqdm(data_loader)):
-        '''
-        dec_inputs: [batch_size, tgt_len]
-        dec_outputs: [batch_size, tgt_len]
-        '''
-        if not 'protein' in conditional:
-            protein = None
-        if not 'prop' in conditional:
-            props = None
-        optimizer.zero_grad()
-        dec_inputs = torch.tensor(dec_inputs, dtype=torch.long, device=device)
-        dec_outputs = torch.tensor(dec_outputs, dtype=torch.long, device=device)
+        optimizer.zero_grad(set_to_none=True)
+        dec_inputs = torch.as_tensor(dec_inputs, dtype=torch.long, device=device)
+        dec_outputs = torch.as_tensor(dec_outputs, dtype=torch.long, device=device)
+        protein, protein_len, pocket, props = _prepare_batch_conditionals(
+            protein, protein_len, pocket, props, conditional
+        )
 
-        if protein is not None:
-            protein = torch.tensor(protein, dtype=torch.float, device=device)
-            protein.unsqueeze(dim=-1)
-        if props is not None:
-            props = torch.tensor(props, dtype=torch.float, device=device)
+        model_outputs = model(dec_inputs, protein, protein_len, pocket, props)
+        loss, prop_loss = _compute_loss(model, criterion, model_outputs, dec_outputs, dec_inputs, props)
 
-        # dec_inputs, dec_outputs = dec_inputs.to(device), dec_outputs.to(device)
-        # outputs: [batch_size * tgt_len, tgt_vocab_size]
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+        optimizer.step()
 
-        outputs, dec_self_attns, dec_logits, _ = model(dec_inputs, protein, protein_len, pocket, props)
-
-        loss = criterion(outputs, dec_outputs.view(-1))
         print_loss_total += loss.item()
         epoch_loss += loss.item()
-        loss.backward()
-
-        # 梯度裁剪
-        torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
-
-        optimizer.step()
 
         if print_every and (i + 1) % print_every == 0:
             print_loss_avg = print_loss_total / print_every
-            print_loss_total = 0
-            print('\tCurrent Loss: %.4f' % print_loss_avg)
+            print_loss_total = 0.0
+            if prop_loss is None:
+                print("\tCurrent Loss: %.4f" % print_loss_avg)
+            else:
+                print("\tCurrent Loss: %.4f | Prop Loss: %.4f" % (print_loss_avg, prop_loss.item()))
 
-    return epoch_loss / len(data_loader)
+    return epoch_loss / max(len(data_loader), 1)
 
 
 def epoch_time(start_time, end_time):
     elapsed_time = end_time - start_time
     elapsed_mins = int(elapsed_time / 60)
-    elapsed_secs = int(elapsed_time - (elapsed_mins * 60))
+    elapsed_secs = int(elapsed_time - elapsed_mins * 60)
     return elapsed_mins, elapsed_secs
 
-def train(data_loader, epochs, vs, lr, model = None, p_type='', conditional=['unconditional'], save_name='GPT.pt'):
+
+def _evaluate(model, data_iterable, criterion, conditional):
+    if data_iterable is None:
+        return None
+    model.eval()
+    total_loss = 0.0
+    total_batches = 0
+    with torch.no_grad():
+        for datas in data_iterable:
+            if datas is None:
+                continue
+            for dec_inputs, dec_outputs, protein, protein_len, pocket, props in tqdm(datas):
+                dec_inputs = torch.as_tensor(dec_inputs, dtype=torch.long, device=device)
+                dec_outputs = torch.as_tensor(dec_outputs, dtype=torch.long, device=device)
+                protein, protein_len, pocket, props = _prepare_batch_conditionals(
+                    protein, protein_len, pocket, props, conditional
+                )
+                model_outputs = model(dec_inputs, protein, protein_len, pocket, props)
+                loss, _ = _compute_loss(model, criterion, model_outputs, dec_outputs, dec_inputs, props)
+                total_loss += loss.item()
+                total_batches += 1
+    if total_batches == 0:
+        return None
+    return total_loss / total_batches
+
+
+def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unconditional",), save_name="GPT.pt"):
     if model is None:
         model = GPT(vocab_size=vs, prop_len=prop_len, p_type=p_type, conditional=conditional)
         try:
-            model.load_state_dict(torch.load('checkpoints/fragGPT/GPT.pt'))
-        except:
+            state = torch.load("checkpoints/fragGPT/GPT.pt", map_location=device)
+            model.load_state_dict(state, strict=False)
+        except Exception:
             pass
-    else:
-        model = model
 
     params = list(model.parameters())
     total_params = sum(p.numel() for p in params)
-    print(f'总参数数量: {total_params}')
-
+    trainable_params = sum(p.numel() for p in params if p.requires_grad)
+    print(f"总参数数量: {total_params}")
+    print(f"可训练参数数量: {trainable_params}")
     print(model)
 
-    if 'unconditional' in conditional:
-        for name, param in model.named_parameters():
-            if 'conditional' in name.lower():  # 使用 lower() 忽略大小写
-                param.requires_grad = False
-                print(f"冻结层: {name}")
-
-        if p_type == 'lora_0':
-            for name, param in model.named_parameters():
-                if 'lora_0' in name.lower():  # 使用 lower() 忽略大小写
-                    param.requires_grad = False
-                    print(f"冻结层: {name}")
-
-        elif p_type == 'lora_1':
-            for name, param in model.named_parameters():
-                if 'lora_1' in name.lower():  # 使用 lower() 忽略大小写
-                    param.requires_grad = False
-                    print(f"冻结层: {name}")
-
+    # Preserve the original unconditional behavior: conditional-only modules do
+    # not contribute when no condition is requested.  No manual freezing is
+    # required because they are not on the forward path.
 
     from datetime import datetime
 
-    criterion = nn.CrossEntropyLoss(ignore_index=0).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    X = []
-    Y = []
-
+    criterion = nn.CrossEntropyLoss(ignore_index=constant.PAD_TOKEN_ID).to(device)
+    optimizer = optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=lr)
+    X, Y = [], []
     last_loss = math.inf
     model.to(device)
 
@@ -509,109 +680,101 @@ def train(data_loader, epochs, vs, lr, model = None, p_type='', conditional=['un
         for epoch in range(epochs):
             X.append(epoch)
             start_time = time.time()
-            train_loss = train_step(model, train_data, optimizer, criterion, CLIP, print_every=1000, conditional=conditional)
+            train_loss = train_step(
+                model,
+                train_data,
+                optimizer,
+                criterion,
+                CLIP,
+                print_every=1000,
+                conditional=conditional,
+            )
             Y.append(train_loss)
             end_time = time.time()
 
             if last_loss > train_loss:
-                torch.save(model.state_dict(), 'checkpoints/fragGPT/' + save_name)
+                torch.save(model.state_dict(), "checkpoints/fragGPT/" + save_name)
                 last_loss = train_loss
 
-            for datas in data_loader[1]:
-                if datas is not None:
-                    with torch.no_grad():
-                        epoch_loss_valid = 0
-
-                        for i, (dec_inputs, dec_outputs, protein, protein_len, pocket, props) in enumerate(tqdm(datas)):
-                                dec_inputs = torch.tensor(dec_inputs, dtype=torch.long, device=device)
-                                dec_outputs = torch.tensor(dec_outputs, dtype=torch.long, device=device)
-                                if protein is not None:
-                                    protein = torch.tensor(protein, dtype=torch.float, device=device)
-                                    protein.unsqueeze(dim=-1)
-                                if protein_len is not None:
-                                    props = torch.tensor(props, dtype=torch.float, device=device)
-                                outputs, dec_self_attns, _, _ = model(dec_inputs, protein, protein_len, pocket, props)
-
-                                loss = criterion(outputs, dec_outputs.view(-1))
-                                epoch_loss_valid += loss.item()
-
-                    print(f"valid loss:{epoch_loss_valid / len(datas)}")
+            valid_loss = _evaluate(model, data_loader[1], criterion, conditional)
+            if valid_loss is not None:
+                print(f"valid loss:{valid_loss}")
 
             epoch_mins, epoch_secs = epoch_time(start_time, end_time)
-            print(f'Epoch: {epoch + 1:02} | Time: {epoch_mins}m {epoch_secs}s')
-            print(f'\tTrain Loss: {train_loss:.3f}')
+            print(f"Epoch: {epoch + 1:02} | Time: {epoch_mins}m {epoch_secs}s")
+            print(f"\tTrain Loss: {train_loss:.3f}")
 
-    now = datetime.now()
-    now = now.strftime('%Y-%m-%d_%H-%M-%S')
+    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    np.save("checkpoints/fragGPT/" + now + "_X.npy", X)
+    np.save("checkpoints/fragGPT/" + now + "_Y.npy", Y)
 
-    np.save('checkpoints/fragGPT/' + now + '_X.npy', X)
-    np.save('checkpoints/fragGPT/' + now + '_Y.npy', Y)
-
-    with torch.no_grad():
-        epoch_loss = 0
-        for datas in data_loader[2]:
-            for i, (dec_inputs, dec_outputs, protein, protein_len, pocket, props) in enumerate(tqdm(datas)):
-                dec_inputs = torch.tensor(dec_inputs, dtype=torch.long, device=device)
-                dec_outputs = torch.tensor(dec_outputs, dtype=torch.long, device=device)
-                if protein is not None:
-                    protein = torch.tensor(protein, dtype=torch.float, device=device)
-                    protein.unsqueeze(dim=-1)
-                if protein_len is not None:
-                    props = torch.tensor(props, dtype=torch.float, device=device)
-                outputs, dec_self_attns, _, _ = model(dec_inputs, protein, protein_len, pocket, props)
-
-                loss = criterion(outputs, dec_outputs.view(-1))
-                epoch_loss += loss.item()
-
-        print(f"test loss:{epoch_loss / len(datas)}")
+    test_loss = _evaluate(model, data_loader[2], criterion, conditional)
+    if test_loss is not None:
+        print(f"test loss:{test_loss}")
 
     return model
 
-def fine_tune(model_path, data_loader, epochs, vs, lr, p_type='', conditional=['prop'], save_name='GPT.pt'):
-    model = GPT(vocab_size=vs, prop_len=prop_len, p_type=p_type, conditional=conditional)
-    model.load_state_dict(torch.load(model_path), strict=False)
 
-    train(data_loader, epochs, vs, lr, model, p_type=p_type, conditional=conditional, save_name=save_name)
+def fine_tune(model_path, data_loader, epochs, vs, lr, p_type="", conditional=("prop",), save_name="GPT.pt"):
+    model = GPT(vocab_size=vs, prop_len=prop_len, p_type=p_type, conditional=conditional)
+    model.load_state_dict(torch.load(model_path, map_location=device), strict=False)
+    return train(
+        data_loader,
+        epochs,
+        vs,
+        lr,
+        model,
+        p_type=p_type,
+        conditional=conditional,
+        save_name=save_name,
+    )
+
 
 def fine_tune_fragGPT(epoch, model_path, plk_path, tokenizer_path):
     data_loaders, tokenizer__ = get_PL_dataloader(plk_path=plk_path, tokenizer_path=tokenizer_path)
     lr = 5e-5
     model = GPT(vocab_size=tokenizer__.get_vocab_size())
-    model.load_state_dict(torch.load(model_path), strict=False)
-    train(((data_loaders,),None,data_loaders), epoch, tokenizer__.get_vocab_size(), lr, model=model)
+    model.load_state_dict(torch.load(model_path, map_location=device), strict=False)
+    return train(((data_loaders,), None, data_loaders), epoch, tokenizer__.get_vocab_size(), lr, model=model)
 
-def fine_tune_fragGPT_molonly(epoch, model_path, tokenizer_path, train_path='gpt/finetune.txt'):
+
+def fine_tune_fragGPT_molonly(epoch, model_path, tokenizer_path, train_path="gpt/finetune.txt"):
     tokenizer__ = tokenizer.tokenizer_from_file(file_path=tokenizer_path)
     smiles = []
-    with open(train_path, 'r') as file_:
-        line = file_.readline().strip('\n')
+    with open(train_path, "r") as file_:
+        line = file_.readline().strip("\n")
         while line:
             smiles.append(line)
-            line = file_.readline().strip('\n')
+            line = file_.readline().strip("\n")
+
+    # The user indicated that the decomposition/SISR construction pipeline has
+    # already been upgraded externally.  This call is intentionally left in its
+    # original place so the model keeps the same data input contract.
     dataprocess.mol_decomp_mp_(smiles, n_core=60)
-    data_loaders = get_frag_dataloader_without_split(frag_token_fun_1, tokenizer__,
-                                             train_file='gpt/frag_decom_test_other.txt',
-                                             test_file='', batch_size=30,
-                                             multiset=1)
+    data_loaders = get_frag_dataloader_without_split(
+        frag_token_fun_1,
+        tokenizer__,
+        train_file="gpt/frag_decom_test_other.txt",
+        test_file="",
+        batch_size=30,
+        multiset=1,
+    )
 
     lr = 5e-5
     model = GPT(vocab_size=tokenizer__.get_vocab_size())
-    model.load_state_dict(torch.load(model_path), strict=False)
+    model.load_state_dict(torch.load(model_path, map_location=device), strict=False)
 
     params = list(model.parameters())
     total_params = sum(p.numel() for p in params)
-    print(f'总参数数量: {total_params}')
+    print(f"总参数数量: {total_params}")
+    return train(data_loaders, epoch, tokenizer__.get_vocab_size(), lr, model=model)
 
-    train(data_loaders, epoch, tokenizer__.get_vocab_size(), lr, model=model)
 
 def train_PL_fragGPT(epoch, plk_path):
     data_loaders, tokenizer__ = get_PL_dataloader(plk_path=plk_path)
     lr = 4e-4
-    train(((data_loaders,),None,data_loaders), epoch, tokenizer__.get_vocab_size(), lr)
+    return train(((data_loaders,), None, data_loaders), epoch, tokenizer__.get_vocab_size(), lr)
 
 
-if __name__ == '__main__':
-
+if __name__ == "__main__":
     print()
-
-

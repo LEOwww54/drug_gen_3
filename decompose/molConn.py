@@ -435,6 +435,9 @@ def gen2mol(texts):
     return result
 
 if __name__ == '__main__':
-    s = '<start> { [C] <rad0> <fc0> <m= 5> <sym1> <r> ( - [C] <rad0> <fc0> <m- 6> <sym2> <r> = <r2> ) ( - [C] <rad0> <fc0> <sym19> <r> ( - [C] <rad0> <fc0> <sym12> <r> = <r1> - [C] <rad0> <fc0> <sym11> <r> = <r2> ) ( = [C] <rad0> <fc0> <m- 4> <sym17> <r> - [C] <rad0> <fc0> <sym16> <r> = [C] <rad0> <fc0> <m- 3> <sym14> <r> - [C] <rad0> <fc0> <sym13> <r> = <r1> ) ) } { [C] <rad0> <fc0> <m- 6> <sym3> <r> ( = [C] <rad0> <fc0> <sym4> <r> - <r1> ) ( - [C] <rad0> <fc0> <sym10> <r> = [C] <rad0> <fc0> <m- 2> <sym8> <r> - [C] <rad0> <fc0> <m- 1> <sym6> <r> = [C] <rad0> <fc0> <sym5> <r> - <r1> ) } { [O] <rad0> <fc0> <m= 5> <sym0> } { [O] <rad0> <fc0> <m- 2> <sym9> } { [O] <rad0> <fc0> <m- 4> <sym18> } { [O] <rad0> <fc0> <m- 3> <sym15> } { [O] <rad0> <fc0> <m- 1> <sym7> } </s>'
+    s = '<start> { [C] <rad0> <fc0> <m- 1> <r> ( - [C] <rad0> <fc0> <r> = <r2> ) ( = [C] <rad0> <fc0> <r> - [C] <rad0> <fc0> <r> ( = [C] <rad0> <fc0> <r> - <r1> - [C] <rad0> <fc0> <r> = <r2> ) ( - [C] <rad0> <fc0> <m- 3> <r> = [C] <rad0> <fc0> <r> - [O] <rad0> <fc0> <r> - <r1> ) ) } { [C] <rad0> <fc0> <m- 4> <r> ( = [C] <rad0> <fc0> <r> - <r1> ) ( - [C] <rad0> <fc0> <m- 2> <r> = [C] <rad0> <fc0> <r> - [C] <rad0> <fc0> <r> = [C] <rad0> <fc0> <r> - <r1> ) } { [C] <rad0> <fc0> <m- 3> - [C] <rad0> <fc0> ( = [O] <rad0> <fc0> ) ( - [NH] <rad0> <fc0> <m- 4> ) } { [C] <rad0> <fc0> - [C] <rad0> <fc0> <m- 1> ( - [C] <rad0> <fc0> ) ( - [C] <rad0> <fc0> ) } { [F] <rad0> <fc0> <m- 2> } </s>'
     r = gen2mol([s])
+    d = Chem.MolFromSmiles('CC(C)(C)c1ccc2occ(CC(=O)Nc3ccccc3F)c2c1')
+    Chem.Kekulize(d, True)
+    r = Chem.MolToSmiles(d)
     pass

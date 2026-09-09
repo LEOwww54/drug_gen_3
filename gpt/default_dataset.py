@@ -1,5 +1,5 @@
 import gpt.tokenizer as tokenizer
-from dataset import get_frag_dataloader_without_split, token_fun_2
+from gpt.dataset import get_frag_dataloader_without_split, token_fun_2
 
 def get_frag_default_dataloader_ZINC_250K_pkl(token_path, s1):
     tokenizer__ = tokenizer.tokenizer_from_file(file_path=token_path)
