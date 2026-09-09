@@ -391,7 +391,7 @@ def decompose_non_ring_component(mol: Chem.Mol,
                     'connections': sub_connections,
                     'is_scaffold': is_scaffold,
                     'smiles_wo_index' : ss,
-                    'raw_mol+props' : {i.GetIdx() : i.GetPropsAsDict() for i in sub_mol_with_virt.GetAtoms()},
+                    'raw_mol_props' : {i.GetIdx() : i.GetPropsAsDict() for i in sub_mol_with_virt.GetAtoms()},
                     'raw_mol' : sub_mol_with_virt
                 })
 
