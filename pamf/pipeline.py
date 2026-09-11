@@ -20,7 +20,6 @@ class PAMFConfig:
     random_seed: int = 42
     energy_window: float = 10.0
     cross_radius: int = 2
-    xtb_executable: str = 'xtb'
     xtb_timeout: float = 300
     xtb_threads: int = 1
     unpaired_electrons: int | None = None
@@ -101,8 +100,8 @@ def decompose_smiles(smiles, config=None, *, reference=None):
         torsions = torsion_variability(mol_h, candidates, conf_ids)
         for row in candidates:
             row['torsion_variability'] = torsions[row['bond_idx']]
-        data = run_xtb(mol_h, conf_ids[0], config.xtb_executable, config.xtb_timeout,
-                       config.xtb_threads, config.unpaired_electrons)
+        data = run_xtb(mol_h, conf_ids[0], timeout=config.xtb_timeout,
+                       threads=config.xtb_threads, unpaired=config.unpaired_electrons)
         add_electronic_features(mol, candidates, data, config.cross_radius)
         electronics = data['metadata']
         electronics['parent_to_xyz_index'] = list(range(1, mol.GetNumAtoms()+1))

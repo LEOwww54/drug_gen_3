@@ -4,7 +4,6 @@ import itertools
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -155,8 +154,14 @@ class PhysicsTests(unittest.TestCase):
 
     def test_xtb_process_protocol_and_mapping(self):
         mol, ids, _ = conformers(parse_smiles('CCCCCC'), count=2)
+        workdirs = []
         def fake_run(command, **kwargs):
             work = Path(kwargs['cwd'])
+            workdirs.append(work)
+            self.assertEqual(command[0], 'xtb')
+            self.assertTrue(Path(command[1]).is_absolute())
+            self.assertEqual(Path(command[1]), work/'molecule.xyz')
+            self.assertNotIn('\\', command[1])
             self.assertEqual(int((work/'molecule.xyz').read_text().splitlines()[0]), mol.GetNumAtoms())
             self.assertIn('--gfn', command)
             self.assertEqual(command[command.index('--chrg')+1], '0')
@@ -164,14 +169,23 @@ class PhysicsTests(unittest.TestCase):
             self.assertGreater(kwargs['timeout'], 0)
             (work/'charges').write_text('\n'.join(['0.0']*mol.GetNumAtoms()))
             (work/'wbo').write_text('\n'.join(f'{b.GetBeginAtomIdx()+1} {b.GetEndAtomIdx()+1} 0.9' for b in mol.GetBonds()))
+            (work/'scratch').mkdir()
+            (work/'scratch'/'restart').write_text('temporary')
             return subprocess.CompletedProcess(command, 0, '* xtb version fake-test\n', '')
-        with patch('pamf.electronic.shutil.which', return_value='/fake/xtb'), patch('pamf.electronic.subprocess.run', side_effect=fake_run):
-            data = run_xtb(mol, ids[0])
+        # Exercise paths containing spaces as well as nested scratch cleanup.
+        temp_directory = tempfile.TemporaryDirectory
+        with temp_directory(prefix='pamf path with spaces ') as parent:
+            with patch('pamf.electronic.tempfile.TemporaryDirectory',
+                       side_effect=lambda **kw: temp_directory(dir=parent, **kw)), \
+                    patch('pamf.electronic.subprocess.run', side_effect=fake_run):
+                data = run_xtb(mol, ids[0])
+            self.assertTrue(workdirs)
+            self.assertTrue(all(not work.exists() for work in workdirs))
         self.assertEqual(len(data['charges']), mol.GetNumAtoms())
         self.assertEqual(data['wbo'][(0, 1)], 0.9)
 
     def test_full_pipeline_with_mock_electronics(self):
-        def provider(mol, *args):
+        def provider(mol, *args, **kwargs):
             return dict(wbo={tuple(sorted((b.GetBeginAtomIdx(), b.GetEndAtomIdx()))): 0.9+0.001*b.GetIdx()
                              for b in mol.GetBonds()}, charges=[0.0]*mol.GetNumAtoms(),
                         polarizabilities=[None]*mol.GetNumAtoms(), metadata={'method': 'mock-test'})
@@ -183,20 +197,27 @@ class PhysicsTests(unittest.TestCase):
         self.assertTrue(all('wbo' in r for r in result['candidates']))
 
     def test_failures_do_not_fallback(self):
-        with patch('pamf.electronic.shutil.which', return_value=None):
+        with patch('pamf.electronic.subprocess.run', side_effect=FileNotFoundError('xtb')):
             with self.assertRaises(FileNotFoundError):
                 decompose_smiles('CCCCCC', PAMFConfig(conformer_count=1))
         mol, ids, _ = conformers(parse_smiles('CCC'), count=1)
-        with patch('pamf.electronic.shutil.which', return_value='/fake/xtb'):
-            with patch('pamf.electronic.subprocess.run', side_effect=subprocess.TimeoutExpired('xtb', 1)):
-                with self.assertRaisesRegex(RuntimeError, 'timed out'):
+        for failure in ('timeout', 'failed', 'missing', 'parse'):
+            workdirs = []
+            def fake_run(command, **kwargs):
+                work = Path(kwargs['cwd'])
+                workdirs.append(work)
+                (work/'restart').write_text('temporary')
+                if failure == 'timeout':
+                    raise subprocess.TimeoutExpired(command, 1)
+                if failure == 'parse':
+                    (work/'wbo').write_text('malformed')
+                    (work/'charges').write_text('0')
+                return subprocess.CompletedProcess(command, int(failure == 'failed'), '', 'failed')
+            with self.subTest(failure=failure), patch('pamf.electronic.subprocess.run', side_effect=fake_run):
+                with self.assertRaises((RuntimeError, ValueError)):
                     run_xtb(mol, ids[0])
-            with patch('pamf.electronic.subprocess.run', return_value=subprocess.CompletedProcess('xtb', 1, '', 'failed')):
-                with self.assertRaisesRegex(RuntimeError, 'failed'):
-                    run_xtb(mol, ids[0])
-            with patch('pamf.electronic.subprocess.run', return_value=subprocess.CompletedProcess('xtb', 0, '', '')):
-                with self.assertRaisesRegex(RuntimeError, 'required'):
-                    run_xtb(mol, ids[0])
+                self.assertTrue(workdirs)
+                self.assertTrue(all(not work.exists() for work in workdirs))
 
     def test_input_contracts(self):
         with self.assertRaisesRegex(ValueError, 'connected molecule'):
@@ -209,7 +230,7 @@ class PhysicsTests(unittest.TestCase):
         candidates, _ = analyze_bonds(mol, ('[C]-[C]',))
         self.assertFalse(candidates)
 
-    @unittest.skipUnless(os.environ.get('PAMF_RUN_XTB') == '1' and shutil.which('xtb'), 'Opt-in real xTB test; set PAMF_RUN_XTB=1')
+    @unittest.skipUnless(os.environ.get('PAMF_RUN_XTB') == '1', 'Opt-in real xTB test; set PAMF_RUN_XTB=1')
     def test_real_xtb(self):
         result = decompose_smiles('CCCOCCC', PAMFConfig(conformer_count=3))
         self.assertEqual(result['electronics']['method'], 'GFN2-xTB')

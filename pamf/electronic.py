@@ -3,7 +3,6 @@
 import math
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 from rdkit import Chem
@@ -58,23 +57,24 @@ def parse_polarizabilities(stdout, atom_count):
     return [values.get(i) for i in range(atom_count)]
 
 
-def run_xtb(mol_h, conf_id, executable='xtb', timeout=300, threads=1, unpaired=None):
-    resolved = shutil.which(executable)
-    if resolved is None:
-        raise FileNotFoundError(f'xTB executable not found: {executable}. Install xTB or explicitly use mode="rules".')
+def run_xtb(mol_h, conf_id, timeout=300, threads=1, unpaired=None):
+    """Call xtb directly; clean all per-run files on success or failure."""
     charge = sum(a.GetFormalCharge() for a in mol_h.GetAtoms())
     radicals = sum(a.GetNumRadicalElectrons() for a in mol_h.GetAtoms())
     uhf = radicals if unpaired is None else unpaired
     electrons = sum(a.GetAtomicNum() for a in mol_h.GetAtoms()) - charge
     if uhf < 0 or uhf > electrons or (electrons-uhf) % 2:
         raise ValueError('Unpaired electron count is incompatible with total electron count')
-    command = [str(Path(resolved).resolve()), 'molecule.xyz', '--gfn', '2', '--sp', '--wbo',
-               '--chrg', str(charge), '--uhf', str(uhf), '--parallel', str(threads)]
     env = os.environ.copy()
     env.update(OMP_NUM_THREADS=str(threads), MKL_NUM_THREADS=str(threads))
     with tempfile.TemporaryDirectory(prefix='pamf-xtb-') as folder:
-        work = Path(folder)
-        (work / 'molecule.xyz').write_text(Chem.MolToXYZBlock(mol_h, confId=conf_id), encoding='utf-8')
+        work = Path(folder).resolve()
+        xyz_path = work / 'molecule.xyz'
+        xyz_path.write_text(Chem.MolToXYZBlock(mol_h, confId=conf_id), encoding='utf-8')
+        # Forward slashes avoid Windows backslash escaping. An argument list
+        # preserves spaces without manual quoting or shell interpolation.
+        command = ['xtb', xyz_path.as_posix(), '--gfn', '2', '--sp', '--wbo',
+                   '--chrg', str(charge), '--uhf', str(uhf), '--parallel', str(threads)]
         try:
             process = subprocess.run(command, cwd=work, env=env, capture_output=True, text=True,
                                      errors='replace', timeout=timeout, check=False,
@@ -90,7 +90,7 @@ def run_xtb(mol_h, conf_id, executable='xtb', timeout=300, threads=1, unpaired=N
         charges = parse_charges((work / 'charges').read_text(), n)
         if abs(sum(charges)-charge) > 0.05:
             raise ValueError('xTB charges do not sum to the input formal charge')
-        return dict(wbo=wbo, charges=charges,
+        result = dict(wbo=wbo, charges=charges,
                     polarizabilities=parse_polarizabilities(process.stdout, n),
                     metadata=dict(method='GFN2-xTB', calculation='singlepoint', command=command,
                                   charge=charge, unpaired_electrons=uhf, conformer_id=conf_id,
@@ -98,6 +98,9 @@ def run_xtb(mol_h, conf_id, executable='xtb', timeout=300, threads=1, unpaired=N
                                   version_lines=[s.strip() for s in process.stdout.splitlines()
                                                  if 'xtb version' in s.lower()],
                                   wbo_representation='sparse; unreported nonbonded pairs treated as zero'))
+    # TemporaryDirectory removes XYZ, outputs and any xTB scratch files before
+    # returning. Exceptions above also exit the context and trigger cleanup.
+    return result
 
 
 def neighborhood(mol, root, blocked_bond, radius):

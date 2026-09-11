@@ -15,7 +15,6 @@ def main():
     source.add_argument('--fit-reference', type=Path, help='Fit statistics from training-set PAMF JSONL')
     parser.add_argument('--output', type=Path, help='JSON for single SMILES/reference, JSONL for batch')
     parser.add_argument('--mode', choices=['xtb', 'rules'], default='xtb')
-    parser.add_argument('--xtb', default='xtb', help='xTB executable name or absolute path')
     parser.add_argument('--reference', type=Path)
     parser.add_argument('--min-size', type=int, default=3)
     parser.add_argument('--max-size', type=int, default=25)
@@ -36,7 +35,7 @@ def main():
                 result = fit_reference(json.loads(line) for line in handle if line.strip())
             text = json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False)+'\n'
         else:
-            config = PAMFConfig(mode=args.mode, xtb_executable=args.xtb,
+            config = PAMFConfig(mode=args.mode,
                                 min_heavy_atoms=args.min_size, max_heavy_atoms=args.max_size,
                                 strict_max_size=args.strict_max_size, conformer_count=args.conformers,
                                 random_seed=args.seed, xtb_timeout=args.timeout, xtb_threads=args.threads,

@@ -13,11 +13,16 @@ python -m pip install -r pamf/requirements.txt
 python -m pamf --smiles "CCCOCCNCCC" --output pamf_result.json
 ```
 
-默认 `xtb` 模式需要 **GFN2-xTB 命令行程序**位于 PATH 中，或显式传路径：
+默认 `xtb` 模式直接调用 PATH 中的 **GFN2-xTB 命令行程序**：
 
 ```powershell
-python -m pamf --smiles "CCCOCCNCCC" --xtb "C:/tools/xtb/bin/xtb.exe" --conformers 10
+python -m pamf --smiles "CCCOCCNCCC" --conformers 10
 ```
+
+XYZ 参数使用绝对路径，Windows 路径分隔符转换为 `/`，通过参数列表传入，
+无需手动添加引号或转义反斜杠。读取结果后删除该次运行的整个临时目录，
+包括 XYZ、结果及 xTB 中间文件；计算失败、超时或解析错误也会触发清理。
+不再提供 `--xtb` / `xtb_executable` 自定义程序路径选项，请通过 PATH 配置命令。
 
 `pip install xtb` 的 Python 接口不等于本模块调用的 CLI。Windows 可使用兼容的
 原生 xTB 构建；若通过 WSL 安装，则应在 WSL 内用 Linux Python、RDKit 和 xTB
