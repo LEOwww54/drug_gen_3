@@ -22,6 +22,7 @@ class PAMFConfig:
     cross_radius: int = 2
     xtb_timeout: float = 300
     xtb_threads: int = 1
+    xtb_executable: str = 'xtb'
     unpaired_electrons: int | None = None
     exact_candidate_limit: int = 14
     beam_width: int = 128
@@ -58,9 +59,11 @@ class PAMFConfig:
                 raise ValueError(f'{name} must be finite and nonnegative')
         if self.xtb_timeout <= 0:
             raise ValueError('xtb_timeout must be positive')
+        if not isinstance(self.xtb_executable, str) or not self.xtb_executable.strip():
+            raise ValueError('xtb_executable must be a nonempty string')
 
 
-def fragment_smiles(smiles: str, config: PAMFConfig | None = None, *, reference=None) -> list[str]:
+def fragment_smiles(smiles: str, config: PAMFConfig | None = None, *, reference: object = None) -> list[str]:
     """输入完整 SMILES，返回带成对连接编号 [k*] 的分解片段列表。
 
     默认使用 xTB 物理模式，与 decompose_smiles 保持一致；纯规则模式请显式
@@ -101,7 +104,8 @@ def decompose_smiles(smiles, config=None, *, reference=None):
         for row in candidates:
             row['torsion_variability'] = torsions[row['bond_idx']]
         data = run_xtb(mol_h, conf_ids[0], timeout=config.xtb_timeout,
-                       threads=config.xtb_threads, unpaired=config.unpaired_electrons)
+                       threads=config.xtb_threads, unpaired=config.unpaired_electrons,
+                       executable=config.xtb_executable)
         add_electronic_features(mol, candidates, data, config.cross_radius)
         electronics = data['metadata']
         electronics['parent_to_xyz_index'] = list(range(1, mol.GetNumAtoms()+1))

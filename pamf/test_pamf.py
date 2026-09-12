@@ -177,12 +177,43 @@ class PhysicsTests(unittest.TestCase):
         with temp_directory(prefix='pamf path with spaces ') as parent:
             with patch('pamf.electronic.tempfile.TemporaryDirectory',
                        side_effect=lambda **kw: temp_directory(dir=parent, **kw)), \
+                    patch('pamf.electronic._resolve_xtb', return_value='xtb'), \
                     patch('pamf.electronic.subprocess.run', side_effect=fake_run):
                 data = run_xtb(mol, ids[0])
             self.assertTrue(workdirs)
             self.assertTrue(all(not work.exists() for work in workdirs))
         self.assertEqual(len(data['charges']), mol.GetNumAtoms())
         self.assertEqual(data['wbo'][(0, 1)], 0.9)
+
+    def test_xtb_custom_executable(self):
+        mol, ids, _ = conformers(parse_smiles('CCC'), count=1)
+        with tempfile.TemporaryDirectory() as folder:
+            executable = Path(folder) / 'custom xtb.exe'
+            executable.write_bytes(b'placeholder')
+
+            def fake_run(command, **kwargs):
+                work = Path(kwargs['cwd'])
+                self.assertEqual(Path(command[0]), executable.resolve())
+                (work/'charges').write_text('\n'.join(['0.0']*mol.GetNumAtoms()))
+                (work/'wbo').write_text('\n'.join(
+                    f'{b.GetBeginAtomIdx()+1} {b.GetEndAtomIdx()+1} 0.9' for b in mol.GetBonds()))
+                return subprocess.CompletedProcess(command, 0, '', '')
+
+            with patch('pamf.electronic.subprocess.run', side_effect=fake_run):
+                run_xtb(mol, ids[0], executable=executable)
+
+        with self.assertRaisesRegex(FileNotFoundError, 'PAMFConfig'):
+            run_xtb(mol, ids[0], executable=Path(folder)/'missing-xtb.exe')
+
+    def test_xtb_discovery_after_path_update(self):
+        from .electronic import _resolve_xtb
+        with tempfile.TemporaryDirectory(prefix='xtb installed ') as folder:
+            executable = Path(folder) / ('xtb.exe' if os.name == 'nt' else 'xtb')
+            executable.write_bytes(b'placeholder')
+            executable.chmod(0o755)
+            with patch.dict(os.environ, {'PATH': ''}), \
+                    patch('pamf.electronic._windows_registered_path', return_value=folder):
+                self.assertEqual(_resolve_xtb('xtb'), str(executable.resolve()))
 
     def test_full_pipeline_with_mock_electronics(self):
         def provider(mol, *args, **kwargs):

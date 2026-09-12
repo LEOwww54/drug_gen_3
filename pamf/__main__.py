@@ -23,6 +23,8 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--timeout', type=float, default=300)
     parser.add_argument('--threads', type=int, default=1)
+    parser.add_argument('--xtb', default='xtb', metavar='PATH',
+                        help='xTB CLI executable (default: resolve xtb from PATH)')
     parser.add_argument('--unpaired', type=int)
     parser.add_argument('--beam-width', type=int, default=128)
     args = parser.parse_args()
@@ -39,7 +41,8 @@ def main():
                                 min_heavy_atoms=args.min_size, max_heavy_atoms=args.max_size,
                                 strict_max_size=args.strict_max_size, conformer_count=args.conformers,
                                 random_seed=args.seed, xtb_timeout=args.timeout, xtb_threads=args.threads,
-                                unpaired_electrons=args.unpaired, beam_width=args.beam_width)
+                                xtb_executable=args.xtb, unpaired_electrons=args.unpaired,
+                                beam_width=args.beam_width)
             reference = json.loads(args.reference.read_text(encoding='utf-8')) if args.reference else None
             if args.smiles is not None:
                 result = decompose_smiles(args.smiles, config, reference=reference)

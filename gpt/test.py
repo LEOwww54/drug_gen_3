@@ -686,7 +686,7 @@ def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unco
                 optimizer,
                 criterion,
                 CLIP,
-                print_every=1000,
+                print_every=100,
                 conditional=conditional,
             )
             Y.append(train_loss)

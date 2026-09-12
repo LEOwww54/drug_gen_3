@@ -3,6 +3,7 @@
 import math
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 from rdkit import Chem
@@ -57,7 +58,52 @@ def parse_polarizabilities(stdout, atom_count):
     return [values.get(i) for i in range(atom_count)]
 
 
-def run_xtb(mol_h, conf_id, timeout=300, threads=1, unpaired=None):
+def _windows_registered_path():
+    """Read current persisted PATH when an IDE inherited an older environment."""
+    if os.name != 'nt':
+        return ''
+    import winreg
+    paths = []
+    for root, key in (
+        (winreg.HKEY_LOCAL_MACHINE,
+         r'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'),
+        (winreg.HKEY_CURRENT_USER, r'Environment'),
+    ):
+        try:
+            with winreg.OpenKey(root, key) as handle:
+                value, _ = winreg.QueryValueEx(handle, 'Path')
+            paths.append(winreg.ExpandEnvironmentStrings(value))
+        except OSError:
+            continue
+    return os.pathsep.join(paths)
+
+
+def _resolve_xtb(executable):
+    """Resolve an xTB command without invoking a shell."""
+    executable = os.fspath(executable)
+    if not executable.strip():
+        raise ValueError('xTB executable must not be empty')
+    resolved = shutil.which(executable)
+    if resolved:
+        return str(Path(resolved).resolve())
+    candidate = Path(executable).expanduser()
+    if candidate.is_file():
+        return str(candidate.resolve())
+    if candidate.parent == Path('.'):
+        registered_path = _windows_registered_path()
+        resolved = shutil.which(executable, path=registered_path) if registered_path else None
+        if resolved:
+            return str(Path(resolved).resolve())
+    # Let subprocess perform the normal platform lookup for a bare command.
+    if candidate.parent == Path('.'):
+        return executable
+    raise FileNotFoundError(
+        f'xTB executable {executable!r} was not found. Install the xTB CLI, add it '
+        'to PATH, or set PAMFConfig(xtb_executable=...) / --xtb.')
+
+
+def run_xtb(mol_h, conf_id, timeout=300, threads=1, unpaired=None,
+            executable='xtb'):
     """Call xtb directly; clean all per-run files on success or failure."""
     charge = sum(a.GetFormalCharge() for a in mol_h.GetAtoms())
     radicals = sum(a.GetNumRadicalElectrons() for a in mol_h.GetAtoms())
@@ -73,12 +119,16 @@ def run_xtb(mol_h, conf_id, timeout=300, threads=1, unpaired=None):
         xyz_path.write_text(Chem.MolToXYZBlock(mol_h, confId=conf_id), encoding='utf-8')
         # Forward slashes avoid Windows backslash escaping. An argument list
         # preserves spaces without manual quoting or shell interpolation.
-        command = ['xtb', xyz_path.as_posix(), '--gfn', '2', '--sp', '--wbo',
+        command = [_resolve_xtb(executable), xyz_path.as_posix(), '--gfn', '2', '--sp', '--wbo',
                    '--chrg', str(charge), '--uhf', str(uhf), '--parallel', str(threads)]
         try:
             process = subprocess.run(command, cwd=work, env=env, capture_output=True, text=True,
                                      errors='replace', timeout=timeout, check=False,
                                      creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                f'xTB executable {os.fspath(executable)!r} was not found. Install the xTB CLI, '
+                'add it to PATH, or set PAMFConfig(xtb_executable=...) / --xtb.') from exc
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f'xTB timed out after {timeout} seconds') from exc
         if process.returncode != 0 or (work / '.sccnotconverged').exists():

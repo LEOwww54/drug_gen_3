@@ -271,5 +271,5 @@ def _re_calculate_prop_by_smiles(smiles):
     return props
 
 if "__main__" == __name__:
-    x = _mol_decom_mp(["C1CCC(C(=O)O)CC1","CC1=CC(C=C)=CC(C)=C1","Oc1cc(O)c2C(=O)C(=Cc2c1)c3ccc(O)c(O)c3", "CC(=O)O[C@H]1[C@H]2[C@@]([C@H]3[C@@]([C@]4(C[C@@H]5[C@]6(C[C@@H](C(=C([C@@H](O6)C(=O)[C@]5(C4=C(C3=O)C)OC(=O)C)OC(=O)c7ccccc7)O)C)OC(=O)C)O2)OC(=O)c8ccccc8)(C1(C)C)OC(=O)C"],1)
+    x = _mol_decom_mp(['COC(=O)Cc1csc(NC(=O)Cc2coc3cc(C)ccc23)n1'],1)
     print()
