@@ -59,7 +59,50 @@ def _mol_decomp_with_prop(smiles):
 def _mol_decomp_with_prop1(smiles):
     return decompose_smiles_list(smiles)
 
-def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version=1):
+def _pamf_frag_records(smiles, n_core, config=None, reference=None, prop_calu=True):
+    """Adapt ordered PAMF fragments to the legacy singleton-record protocol."""
+    from pamf import fragment_smiles_batch
+    batches = fragment_smiles_batch(smiles, config, workers=n_core,
+                                    return_format='list', reference=reference)
+    if len(batches) != len(smiles):
+        raise ValueError('PAMF output length does not match input')
+    records = []
+    for original, fragments in zip(smiles, batches):
+        rows = []
+        for structure in fragments:
+            mol = Chem.MolFromSmiles(structure)
+            if mol is None:
+                raise ValueError(f'Invalid PAMF fragment: {structure!r}')
+            # Preserve attachment isotopes in raw_mol. Rank a separate copy
+            # without attachment IDs so arbitrary cut numbering is not symmetry.
+            unlabelled = Chem.Mol(mol)
+            for atom in unlabelled.GetAtoms():
+                atom.SetAtomMapNum(0)
+                if atom.GetAtomicNum() == 0:
+                    atom.SetIsotope(0)
+            ranks = Chem.CanonicalRankAtoms(unlabelled, breakTies=False)
+            rows.append(dict(smiles=structure, raw_mol=mol,
+                             raw_mol_props={i: {'_symmetry': int(rank)}
+                                            for i, rank in enumerate(ranks)},
+                             type='pamf', smiles_wo_index=Chem.MolToSmiles(unlabelled)))
+        records.append([dict(original_smiles=original, fragments=rows,
+                             prop=_get_prop(Chem.MolFromSmiles(original)) if prop_calu else None)])
+    return records
+
+
+def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version=1,
+                  *, method='legacy', pamf_config=None, pamf_reference=None):
+    """Select legacy (version 0/1) or pamf; all returned rows follow input order.
+
+    Any failed row raises instead of silently shifting molecules/properties.
+    """
+    smiles = list(smiles)
+    if type(n_core) is not int or n_core < 1:
+        raise ValueError('n_core must be a positive integer')
+    if method not in ('legacy', 'pamf'):
+        raise ValueError('method must be legacy or pamf')
+    if properties is not None and len(properties) != len(smiles):
+        raise ValueError('properties must have the same length as smiles')
     print('decomposing molecules...')
 
     results = []
@@ -69,32 +112,39 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
     frags_type = {}
     prop_calu = False
     if properties is not None and len(properties) == len(smiles):
-        props = properties
+        props = list(properties)
     else:
         props = []
         prop_calu = True
 
-    if version == 1:
+    if method == 'pamf':
+        frags = _pamf_frag_records(smiles, n_core, pamf_config, pamf_reference, prop_calu)
+    elif version == 1:
         pf = _mol_decomp_with_prop1
         ff = _mol_decomp_with_prop1
     elif version == 0:
         pf = _mol_decomp_with_prop
         ff = _mol_decomp
     else:
-        return
+        raise ValueError('legacy version must be 0 or 1')
 
-    if prop_calu:
+    if method == 'legacy' and prop_calu:
         frags = _process_list_parallel(smiles, num_cores=n_core, process_func=pf)
-    else:
+    elif method == 'legacy':
         frags = _process_list_parallel(smiles, num_cores=n_core, process_func=ff)
+
+    if len(frags) != len(smiles):
+        raise ValueError('Decomposition output length does not match input')
 
     ii = 0
     print('processing frag data...')
-    for frag in tqdm(frags):
+    for input_index, frag in enumerate(tqdm(frags)):
         try:
             tmp = []
             frag = frag[0]
-            os = frag['original_smiles']
+            original_smiles = smiles[input_index]
+            if frag['original_smiles'] != original_smiles:
+                raise ValueError('Decomposition output order does not match input')
 
             flag = True
             for t in frag['fragments']:
@@ -123,13 +173,12 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
                     #     structure = short_ring(structure)
                 tmp.append((raw_mol, raw_mol_props))
             if not flag:
-                continue
+                raise ValueError('Unsupported J fragment')
         except Exception as e:
-            print(e)
-            continue
+            raise ValueError(f'Decomposition input[{input_index}] {smiles[input_index]!r}: {e}') from e
 
         results.append(tmp)
-        oring.append(os)
+        oring.append(original_smiles)
         if properties is None:
             props.append(frag['prop'])
         pass
@@ -150,6 +199,8 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
         sentences = []
         print('processing mol data...')
         XX = _process_list_parallel(mols, num_cores=n_core, process_func=_mol_data)
+        if len(mols) != len(smiles) or len(XX) != len(smiles):
+            raise ValueError('Token conversion output length does not match input')
         for xx in XX:
             sentences.append(xx[0])
             results2.append(xx[1])
@@ -184,6 +235,8 @@ def _mol_decom_frag_decom(frags):
             ddd = processor.format_final_output(processor.process_mol(i[0], i[1]))
             if ddd is not None:
                 result.append(ddd)
+            else:
+                raise ValueError('Fragment token conversion failed')
         results.append(result)
 
     return results

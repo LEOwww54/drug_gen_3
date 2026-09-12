@@ -50,6 +50,27 @@ xTB 缺失、超时、不收敛或输出格式不正确时会报错，不静默�
 
 ## Python 接口
 
+现有 `decompose.base._mol_decom_mp` 和 `decomposer.mol_decom_mp` 支持
+`method='legacy'`（默认，`version=0/1`）或 `method='pamf'`。
+PAMF 通过 `pamf_config`、`pamf_reference` 配置，`n_core` 控制并发；例如：
+
+```python
+from decompose.base import _mol_decom_mp
+from pamf import PAMFConfig
+
+if __name__ == '__main__':
+    sentences, frags, originals, props, stats = _mol_decom_mp(
+        ['CCCCCC', 'CCCOCCC', 'CCCCCC'], n_core=2,
+        properties=[0.1, 0.2, 0.3], method='pamf',
+        pamf_config=PAMFConfig(xtb_threads=1))
+```
+
+这里 `frags` 保持原接口的 token 列表格式，而非 PAMF 的片段 SMILES；
+适配层将片段转换为原记录结构并保留连接同位素和对称性属性。
+`sentences[i]`、`frags[i]`、`originals[i]`、`props[i]` 均对应输入第 i 项，
+保留重复输入。属性数量不匹配或分解失败时抛错，防止跳行后错配属性。
+`statistic_only=True` 保持原来的仅统计返回约定，PAMF 统计类型名为 `pamf`。
+
 批量多进程接口（Windows 下必须在 `if __name__ == '__main__':` 中调用）：
 
 ```python
