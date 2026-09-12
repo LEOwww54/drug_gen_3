@@ -50,6 +50,41 @@ xTB 缺失、超时、不收敛或输出格式不正确时会报错，不静默�
 
 ## Python 接口
 
+批量多进程接口（Windows 下必须在 `if __name__ == '__main__':` 中调用）：
+
+```python
+from pamf import PAMFConfig, fragment_smiles_batch
+
+if __name__ == '__main__':
+    smiles = ['CCCCCC', 'CCCOCCC', 'CCCCCC']
+    config = PAMFConfig(xtb_threads=1)
+    fragments = fragment_smiles_batch(smiles, config, workers=4)
+    # fragments[i] 是 smiles[i] 对应的 list[str]，重复输入保留位置。
+    by_smiles = fragment_smiles_batch(
+        smiles, config, workers=4, return_format='dict')
+    # by_smiles[原始SMILES] -> list[str]，重复键合并。
+```
+
+推荐默认 `list[list[str]]`：适合数据集逐行对齐，保留重复样本和顺序。
+`dict[str, list[str]]` 适合按 SMILES 查询，仅保留每个原始字符串的一个结果，
+按首次出现顺序排列；不会将不同写法的等价 SMILES 自动归并。
+两种形式都在单次调用中对完全相同的字符串去重计算；list 中每项是独立列表，
+修改重复样本的一项不会影响其他项。返回值保留 PAMF 的成对连接标记。
+
+输入列表、配置和 reference 在入口建立快照。使用 spawn 独立进程，
+子进程内部创建 RDKit 分子，每次 xTB 计算使用独立临时目录和子进程环境；
+父进程独占结果汇总，不使用共享可变结果字典或 Manager。
+待执行任务数量受限，避免一次性为整个数据集创建 Future；输入与最终输出仍驻留内存。
+`workers=1` 为串行，默认进程数依据 CPU 数与 `xtb_threads` 计算并受唯一输入数量限制。
+大数据集建议显式指定 `workers`，结合内存容量控制并发；CPU 使用量约为
+`workers * xtb_threads`（RDKit 构象阶段每进程单线程）。
+无效输入或计算失败会抛出含原始 SMILES 和从零开始的首次输入索引的异常，
+不返回部分结果。尚未运行的任务尽可能取消，已运行任务结束或达到 xTB timeout 后清理。
+在交互式环境中可使用 `workers=1`，多进程调用请放在可导入的 Python 脚本中。
+
+测试：`python -m unittest pamf.test_batch -v`；设置 `PAMF_RUN_XTB=1`
+可额外验证真实 xTB 的串行与多进程结果一致。
+
 只需要输入 SMILES 并取得片段列表时，使用 `fragment_smiles`：
 
 ```python
