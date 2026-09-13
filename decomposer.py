@@ -5,14 +5,16 @@ import pickle
 
 def mol_decom_mp(smiles, n_core, output_format='pkl', output_path=[], version=1, properties=None, stat_only=False,
                  *, method='legacy', pamf_config=None, pamf_reference=None):
-    sentences, frags, oring, props, frags_stat = _mol_decom_mp(
+    sentences, frags, oring, props, frags_stat, fragment_smiles = _mol_decom_mp(
         smiles, n_core, properties=properties, statistic_only=stat_only, version=version,
-        method=method, pamf_config=pamf_config, pamf_reference=pamf_reference)
+        method=method, pamf_config=pamf_config, pamf_reference=pamf_reference,
+        return_fragment_smiles=True)
     if stat_only:
         return sentences, frags, oring, props, frags_stat
 
     if output_format == 'pkl':
-        _mol_decom_mp_to_pkl_file(sentences=sentences, oring=oring, props=props, pkl_path=output_path[0])
+        _mol_decom_mp_to_pkl_file(sentences=sentences, oring=oring, props=props, pkl_path=output_path[0],
+                                  fragment_smiles=fragment_smiles)
 
     return sentences, frags, oring, props, frags_stat
 

@@ -648,7 +648,11 @@ def _evaluate(model, data_iterable, criterion, conditional):
     return total_loss / total_batches
 
 
-def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unconditional",), save_name="GPT.pt"):
+def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unconditional",), save_name="GPT.pt",
+          output_dir=None):
+    from pathlib import Path
+    output_dir = Path(output_dir) if output_dir is not None else Path('checkpoints/fragGPT')
+    output_dir.mkdir(parents=True, exist_ok=True)
     if model is None:
         model = GPT(vocab_size=vs, prop_len=prop_len, p_type=p_type, conditional=conditional)
         try:
@@ -693,7 +697,7 @@ def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unco
             end_time = time.time()
 
             if last_loss > train_loss:
-                torch.save(model.state_dict(), "checkpoints/fragGPT/" + save_name)
+                torch.save(model.state_dict(), output_dir / save_name)
                 last_loss = train_loss
 
             valid_loss = _evaluate(model, data_loader[1], criterion, conditional)
@@ -705,8 +709,8 @@ def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unco
             print(f"\tTrain Loss: {train_loss:.3f}")
 
     now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    np.save("checkpoints/fragGPT/" + now + "_X.npy", X)
-    np.save("checkpoints/fragGPT/" + now + "_Y.npy", Y)
+    np.save(output_dir / (now + "_X.npy"), X)
+    np.save(output_dir / (now + "_Y.npy"), Y)
 
     test_loss = _evaluate(model, data_loader[2], criterion, conditional)
     if test_loss is not None:

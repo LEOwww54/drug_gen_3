@@ -75,6 +75,24 @@ def _pamf_frag_records(smiles, n_core, config=None, reference=None, prop_calu=Tr
     return records
 
 
+def _pamf_statistics_smiles(mol):
+    """Canonical independent components after deleting dummy attachment atoms.
+
+    Work on a copy so attachment IDs used by tokenization/PKL remain intact.
+    RDKit recomputes implicit hydrogens at the exposed attachment sites.
+    """
+    clean = Chem.RWMol(mol)
+    for atom in clean.GetAtoms():
+        atom.SetAtomMapNum(0)
+    for index in reversed([a.GetIdx() for a in clean.GetAtoms()
+                           if a.GetAtomicNum() == 0]):
+        clean.RemoveAtom(index)
+    clean = clean.GetMol()
+    Chem.SanitizeMol(clean)
+    return [Chem.MolToSmiles(part, canonical=True, isomericSmiles=True)
+            for part in Chem.GetMolFrags(clean, asMols=True)]
+
+
 def _pamf_one_record(original, fragments, prop_calu):
     rows = []
     for structure in fragments:
@@ -92,7 +110,8 @@ def _pamf_one_record(original, fragments, prop_calu):
         rows.append(dict(smiles=structure, raw_mol=mol,
                          raw_mol_props={i: {'_symmetry': int(rank)}
                                         for i, rank in enumerate(ranks)},
-                         type='pamf', smiles_wo_index=Chem.MolToSmiles(unlabelled)))
+                         type='pamf', smiles_wo_index=Chem.MolToSmiles(unlabelled),
+                         statistics_smiles=_pamf_statistics_smiles(mol)))
     return [dict(original_smiles=original, fragments=rows,
                  prop=_get_prop(Chem.MolFromSmiles(original)) if prop_calu else None)]
 
@@ -106,10 +125,12 @@ def _pamf_tokens_safe(frags):
 
 
 def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version=1,
-                  *, method='legacy', pamf_config=None, pamf_reference=None):
+                  *, method='legacy', pamf_config=None, pamf_reference=None,
+                  return_fragment_smiles=False):
     """Select legacy (version 0/1) or pamf; all returned rows follow input order.
 
     PAMF failures are skipped; properties are filtered by the same input indices.
+    Set return_fragment_smiles to append an aligned list of fragment SMILES lists.
     """
     smiles = list(smiles)
     if n_core < 1:
@@ -122,6 +143,7 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
 
     results = []
     accepted_records = []
+    fragment_smiles = []
     oring = []
     formula = []
     frags_stat = {}
@@ -159,6 +181,7 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
             continue
         try:
             tmp = []
+            molecule_fragment_smiles = []
             frag = frag[0]
             original_smiles = smiles[input_index]
             if frag['original_smiles'] != original_smiles:
@@ -180,6 +203,7 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
                     # if smiles['type'] == 'ring_system' and not full_ring:
                     #     structure = short_ring(structure)
                 tmp.append((raw_mol, raw_mol_props))
+                molecule_fragment_smiles.append(Chem.MolToSmiles(raw_mol, isomericSmiles=True))
             if not flag:
                 raise ValueError('Unsupported J fragment')
         except Exception as e:
@@ -190,6 +214,7 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
 
         results.append(tmp)
         accepted_records.append(frag)
+        fragment_smiles.append(molecule_fragment_smiles)
         oring.append(original_smiles)
         props.append(frag['prop'] if properties is None else properties[input_index])
         pass
@@ -199,7 +224,8 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
     with open("stru_data.json", "w", encoding="utf-8") as f:
         json.dump(frags_type, f, ensure_ascii=False, indent=4)
     if statistic_only:
-        return None, None, None, None, frags_type
+        output = (None, None, None, None, frags_type)
+        return output + (None,) if return_fragment_smiles else output
     else:
         print('advance molecular decomposition')
         if method == 'pamf':
@@ -217,7 +243,8 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
             frags_type = _fragment_statistics([accepted_records[i] for i in kept])
             with open('stru_data.json', 'w', encoding='utf-8') as handle:
                 json.dump(frags_type, handle, ensure_ascii=False, indent=4)
-            return sentences, results2, [oring[i] for i in kept], [props[i] for i in kept], frags_type
+            output = (sentences, results2, [oring[i] for i in kept], [props[i] for i in kept], frags_type)
+            return output + ([fragment_smiles[i] for i in kept],) if return_fragment_smiles else output
         import constant
         index = 0
         mols = _process_list_parallel(results, num_cores=n_core, process_func=_mol_decom_frag_decom)
@@ -234,15 +261,18 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
             results2.append(xx[1])
 
     print('molecule decomposing done')
-    return sentences, results2, oring, props, frags_type
+    output = (sentences, results2, oring, props, frags_type)
+    return output + (fragment_smiles,) if return_fragment_smiles else output
 
 def _fragment_statistics(records):
     counts = {}
     for record in records:
         for fragment in record['fragments']:
             group = counts.setdefault(fragment['type'], {})
-            smiles = fragment['smiles_wo_index']
-            group[smiles] = group.get(smiles, 0) + 1
+            structures = (fragment['statistics_smiles'] if fragment['type'] == 'pamf'
+                          else [fragment['smiles_wo_index']])
+            for smiles in structures:
+                group[smiles] = group.get(smiles, 0) + 1
     return counts
 
 
@@ -317,7 +347,8 @@ def _remove_H_protect_elements(text):
 
     return result
 
-def _mol_decom_mp_to_pkl_file(sentences, oring, props, protein=None, pocket=None, pkl_path='gpt/frag_file/frag.pkl'):
+def _mol_decom_mp_to_pkl_file(sentences, oring, props, protein=None, pocket=None, pkl_path='gpt/frag_file/frag.pkl',
+                              *, fragment_smiles=None):
     import pickle
     gpt_folder = "gpt"
     frag_file_path = os.path.join(gpt_folder, "frag_file")
@@ -337,12 +368,19 @@ def _mol_decom_mp_to_pkl_file(sentences, oring, props, protein=None, pocket=None
         oring = [None] * len(sentences)
     if pocket is None:
         pocket = [None] * len(sentences)
+    if fragment_smiles is None:
+        fragment_smiles = [None] * len(sentences)
+    for name, rows in [('oring', oring), ('props', props), ('protein', protein),
+                       ('pocket', pocket), ('fragment_smiles', fragment_smiles)]:
+        if len(rows) != len(sentences):
+            raise ValueError(f'{name} length must match sentences')
     for i in tqdm(range(len(sentences))):
         result[i] = {}
         try:
             result[i]['oring'] = oring[i]
             result[i]['props'] = props[i]
             result[i]['frag'] = sentences[i]
+            result[i]['fragment_smiles'] = fragment_smiles[i]
             result[i]['protein'] = protein[i]
             result[i]['pocket'] = pocket[i]
         except Exception as e:
@@ -352,7 +390,8 @@ def _mol_decom_mp_to_pkl_file(sentences, oring, props, protein=None, pocket=None
     result2 = {}
     result2['mol'] = result
     result2['protein_dict'] = [-1] * len(sentences)
-    pickle.dump(result2, open(pkl_path, 'wb'))
+    with open(pkl_path, 'wb') as handle:
+        pickle.dump(result2, handle)
 
     return result
 

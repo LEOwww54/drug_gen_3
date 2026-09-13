@@ -344,6 +344,63 @@ def load_PL_datapair_from_pkl(path, tokenizer_, token_fun, protein=True):
 
     return datas
 
+class PAMFDataSet(PLDataSet):
+    """Pre-split PAMF records, retaining row IDs and original SMILES for audits."""
+
+    def __init__(self, path, tokenizer_, *, require_properties=True):
+        import math
+        for index, token in enumerate(SPECIAL_TOKENS):
+            if tokenizer_.token_to_id(token) != index:
+                raise ValueError('PAMF tokenizer special IDs do not match constant.py')
+        with open(path, 'rb') as handle:
+            records = pkl.load(handle)['mol']
+        datas = []
+        self.row_ids, self.original_smiles = [], []
+        self.skipped_rows = []
+        self.unknown_tokens = 0
+        for key, row in records.items():
+            words = tokenizer.split_pamf_sentence(row['frag'])
+            if words and words[0] == START_TOKEN:
+                words = words[1:]
+            if words and words[-1] == EOS_TOKEN:
+                words = words[:-1]
+            if not words or len(words) + 2 > constant.max_pos:
+                self.skipped_rows.append(key)
+                continue
+            ids = [tokenizer_.token_to_id(word) for word in words]
+            self.unknown_tokens += sum(i is None for i in ids)
+            ids = [UNK_TOKEN_ID if i is None else i for i in ids]
+            props = row.get('props')
+            if require_properties and (props is None or len(props) != constant.prop_len
+                                       or not all(math.isfinite(float(v)) for v in props)):
+                raise ValueError(f'Invalid PAMF properties in {path}, row {key}')
+            datas.append((None, [START_TOKEN_ID, *ids, EOS_TOKEN_ID],
+                          list(props) if require_properties else None, None))
+            self.row_ids.append(key)
+            self.original_smiles.append(row['oring'])
+        super().__init__(datas)
+
+
+def get_pamf_dataloader_without_split(tokenizer_, train_file, test_file, *,
+                                     batch_size=50, require_properties=True):
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError('batch_size must be a positive integer')
+    train = PAMFDataSet(train_file, tokenizer_, require_properties=require_properties)
+    test = PAMFDataSet(test_file, tokenizer_, require_properties=require_properties)
+    if not len(train):
+        raise ValueError('No usable PAMF training samples')
+    if train.unknown_tokens:
+        raise ValueError('PAMF training tokens absent from vocabulary; rebuild the matching tokenizer')
+    print(f'PAMF train={len(train)}, test={len(test)}, '
+          f'length-filtered={len(train.skipped_rows) + len(test.skipped_rows)}, '
+          f'test unknown tokens={test.unknown_tokens}')
+    train_loader = DataLoader(train, batch_size=batch_size, shuffle=True,
+                              collate_fn=train.padding_batch)
+    test_loader = DataLoader(test, batch_size=batch_size, shuffle=False,
+                             collate_fn=test.padding_batch)
+    return [train_loader], [None], [test_loader]
+
+
 def load_protein_emb(pkl_file_path='gpt/protein2vector.pkl'):
     with open(pkl_file_path, 'rb') as f:
         results = pkl.load(f)

@@ -1,10 +1,12 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 from torch.utils.data import default_collate
 from autoencoder.fragment_vq import FragmentDataset, FragmentVQAutoencoder, fragment_graph
+from autoencoder.train_vq import train_vq
 
 
 class FragmentVQTests(unittest.TestCase):
@@ -68,6 +70,34 @@ class FragmentVQTests(unittest.TestCase):
             fragment_graph('CCCC', 2)
         with self.assertRaises(ValueError):
             fragment_graph('', 10)
+
+    def test_training_list_interface(self):
+        smiles = ['CC', 'CO', 'CN', 'CC']
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'vq.pth'
+            with patch('autoencoder.train_vq.torch.optim.AdamW',
+                       wraps=torch.optim.AdamW) as optimizer:
+                model = train_vq(1, 3e-4, smiles, checkpoint=path, batch_size=2,
+                                 max_nodes=4, num_codes=2, codebook_size=8, device='cpu')
+            self.assertEqual(optimizer.call_args.kwargs['lr'], 3e-4)
+            self.assertFalse(model.training)
+            self.assertTrue(path.is_file())
+            self.assertEqual(model.encode_fragments(smiles),
+                             FragmentVQAutoencoder.load(path).encode_fragments(smiles))
+        self.assertEqual(smiles, ['CC', 'CO', 'CN', 'CC'])
+
+    def test_training_arguments(self):
+        for epochs, lr, smiles, error in [
+            (0, 1e-4, ['CC', 'CO'], ValueError),
+            (1, float('nan'), ['CC', 'CO'], ValueError),
+            (1, -1, ['CC', 'CO'], ValueError),
+            (1, 1e-4, 'CC', TypeError),
+            (1, 1e-4, [], ValueError),
+            (1, 1e-4, ['CC', 'CC'], ValueError),
+        ]:
+            with self.subTest(epochs=epochs, lr=lr, smiles=smiles):
+                with self.assertRaises(error):
+                    train_vq(epochs, lr, smiles)
 
 
 if __name__ == '__main__':

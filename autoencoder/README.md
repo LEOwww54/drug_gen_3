@@ -32,6 +32,29 @@ python -m unittest autoencoder.test_fragment_vq
 
 ## 调用
 
+直接使用 SMILES 列表训练（不自动执行 PAMF 分解）：
+
+通过 `decomposer.mol_decom_mp` 新生成的 PKL 在每条 `data['mol'][i]`
+记录中增加 `fragment_smiles` 列表，保留重复片段和连接标记，可用于
+构造下面的训练输入。旧 PKL 不会自动补充此字段，需要重新生成。
+
+```python
+from autoencoder.train_vq import train_vq
+
+model = train_vq(
+    epochs=50,
+    learning_rate=1e-4,
+    smiles_list=['[1*]CC', '[1*]CO', 'c1ccccc1'],
+    checkpoint='autoencoder/fragment_vq.pth',
+    batch_size=64,
+)
+```
+
+至少需要两个规范化后不同的结构；默认自动选择 CUDA/CPU，可传
+`device='cpu'`。返回验证损失最优的模型（eval 模式），并保存到
+`checkpoint`，覆盖该路径已有文件。命令行训练也可用 `--lr 1e-4`
+或 `--learning-rate 1e-4` 指定学习率。
+
 ```python
 from autoencoder.fragment_vq import FragmentVQAutoencoder
 
