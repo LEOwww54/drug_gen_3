@@ -221,7 +221,7 @@ class PhysicsTests(unittest.TestCase):
                              for b in mol.GetBonds()}, charges=[0.0]*mol.GetNumAtoms(),
                         polarizabilities=[None]*mol.GetNumAtoms(), metadata={'method': 'mock-test'})
         with patch('pamf.pipeline.run_xtb', side_effect=provider):
-            result = decompose_smiles('CCCOCCC', PAMFConfig(conformer_count=3))
+            result = decompose_smiles('CCCOCCC', PAMFConfig(conformer_count=3, xtb_backend='cli'))
         self.assertTrue(result['reconstruction_valid'])
         self.assertEqual(result['electronics']['parent_to_xyz_index'], list(range(1, 8)))
         self.assertIsNotNone(result['geometry'])
@@ -230,7 +230,7 @@ class PhysicsTests(unittest.TestCase):
     def test_failures_do_not_fallback(self):
         with patch('pamf.electronic.subprocess.run', side_effect=FileNotFoundError('xtb')):
             with self.assertRaises(FileNotFoundError):
-                decompose_smiles('CCCCCC', PAMFConfig(conformer_count=1))
+                decompose_smiles('CCCCCC', PAMFConfig(conformer_count=1, xtb_backend='cli'))
         mol, ids, _ = conformers(parse_smiles('CCC'), count=1)
         for failure in ('timeout', 'failed', 'missing', 'parse'):
             workdirs = []
@@ -263,7 +263,7 @@ class PhysicsTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get('PAMF_RUN_XTB') == '1', 'Opt-in real xTB test; set PAMF_RUN_XTB=1')
     def test_real_xtb(self):
-        result = decompose_smiles('CCCOCCC', PAMFConfig(conformer_count=3))
+        result = decompose_smiles('CCCOCCC', PAMFConfig(conformer_count=3, xtb_backend='cli'))
         self.assertEqual(result['electronics']['method'], 'GFN2-xTB')
         self.assertTrue(result['reconstruction_valid'])
 

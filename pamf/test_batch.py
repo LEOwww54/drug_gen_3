@@ -37,7 +37,21 @@ class BatchTests(unittest.TestCase):
 
     def test_worker_error_has_input_context(self):
         with self.assertRaisesRegex(RuntimeError, r'input\[1\].*invalid'):
-            fragment_smiles_batch(['CC', 'invalid'], PAMFConfig(mode='rules'), workers=2)
+            fragment_smiles_batch(['CC', 'invalid'], PAMFConfig(mode='rules'), workers=2,
+                                  on_error='raise')
+
+    def test_skip_failures_preserves_success_indices(self):
+        inputs = ['CCCCCC', 'invalid', 'CC', 'invalid', 'CCCCCC', '']
+        for workers in (1, 2):
+            output, indices = fragment_smiles_batch(inputs, PAMFConfig(mode='rules'),
+                                                    workers=workers, return_indices=True)
+            self.assertEqual(indices, [0, 2, 4])
+            self.assertEqual(output[0], output[2])
+            self.assertEqual(output[1], ['CC'])
+        mapping = fragment_smiles_batch(inputs, PAMFConfig(mode='rules'), workers=2,
+                                        return_format='dict')
+        self.assertEqual(list(mapping), ['CCCCCC', 'CC'])
+        self.assertEqual(fragment_smiles_batch(['invalid'], PAMFConfig(mode='rules')), [])
 
     @unittest.skipUnless(os.environ.get('PAMF_RUN_XTB') == '1', 'Opt-in real xTB')
     def test_real_xtb_parallel_matches_serial(self):

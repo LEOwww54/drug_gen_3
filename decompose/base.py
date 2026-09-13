@@ -62,42 +62,57 @@ def _mol_decomp_with_prop1(smiles):
 def _pamf_frag_records(smiles, n_core, config=None, reference=None, prop_calu=True):
     """Adapt ordered PAMF fragments to the legacy singleton-record protocol."""
     from pamf import fragment_smiles_batch
-    batches = fragment_smiles_batch(smiles, config, workers=n_core,
-                                    return_format='list', reference=reference)
-    if len(batches) != len(smiles):
-        raise ValueError('PAMF output length does not match input')
-    records = []
-    for original, fragments in zip(smiles, batches):
-        rows = []
-        for structure in fragments:
-            mol = Chem.MolFromSmiles(structure)
-            if mol is None:
-                raise ValueError(f'Invalid PAMF fragment: {structure!r}')
-            # Preserve attachment isotopes in raw_mol. Rank a separate copy
-            # without attachment IDs so arbitrary cut numbering is not symmetry.
-            unlabelled = Chem.Mol(mol)
-            for atom in unlabelled.GetAtoms():
-                atom.SetAtomMapNum(0)
-                if atom.GetAtomicNum() == 0:
-                    atom.SetIsotope(0)
-            ranks = Chem.CanonicalRankAtoms(unlabelled, breakTies=False)
-            rows.append(dict(smiles=structure, raw_mol=mol,
-                             raw_mol_props={i: {'_symmetry': int(rank)}
-                                            for i, rank in enumerate(ranks)},
-                             type='pamf', smiles_wo_index=Chem.MolToSmiles(unlabelled)))
-        records.append([dict(original_smiles=original, fragments=rows,
-                             prop=_get_prop(Chem.MolFromSmiles(original)) if prop_calu else None)])
+    batches, indices = fragment_smiles_batch(smiles, config, workers=n_core,
+                                             return_format='list', reference=reference,
+                                             return_indices=True)
+    records = [None] * len(smiles)
+    for index, fragments in zip(indices, batches):
+        original = smiles[index]
+        try:
+            records[index] = _pamf_one_record(original, fragments, prop_calu)
+        except Exception as exc:
+            tqdm.write(f'PAMF skipped input[{index}] {original!r} during adaptation: {exc}')
     return records
+
+
+def _pamf_one_record(original, fragments, prop_calu):
+    rows = []
+    for structure in fragments:
+        mol = Chem.MolFromSmiles(structure)
+        if mol is None:
+            raise ValueError(f'Invalid PAMF fragment: {structure!r}')
+        # Preserve attachment isotopes in raw_mol. Rank a separate copy
+        # without attachment IDs so arbitrary cut numbering is not symmetry.
+        unlabelled = Chem.Mol(mol)
+        for atom in unlabelled.GetAtoms():
+            atom.SetAtomMapNum(0)
+            if atom.GetAtomicNum() == 0:
+                atom.SetIsotope(0)
+        ranks = Chem.CanonicalRankAtoms(unlabelled, breakTies=False)
+        rows.append(dict(smiles=structure, raw_mol=mol,
+                         raw_mol_props={i: {'_symmetry': int(rank)}
+                                        for i, rank in enumerate(ranks)},
+                         type='pamf', smiles_wo_index=Chem.MolToSmiles(unlabelled)))
+    return [dict(original_smiles=original, fragments=rows,
+                 prop=_get_prop(Chem.MolFromSmiles(original)) if prop_calu else None)]
+
+
+def _pamf_tokens_safe(frags):
+    """One molecule per job; catch conversion errors before they escape the pool."""
+    try:
+        return _mol_data([_mol_decom_frag_decom(frags)])
+    except Exception as exc:
+        return {'error': str(exc)}
 
 
 def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version=1,
                   *, method='legacy', pamf_config=None, pamf_reference=None):
     """Select legacy (version 0/1) or pamf; all returned rows follow input order.
 
-    Any failed row raises instead of silently shifting molecules/properties.
+    PAMF failures are skipped; properties are filtered by the same input indices.
     """
     smiles = list(smiles)
-    if type(n_core) is not int or n_core < 1:
+    if n_core < 1:
         raise ValueError('n_core must be a positive integer')
     if method not in ('legacy', 'pamf'):
         raise ValueError('method must be legacy or pamf')
@@ -106,13 +121,14 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
     print('decomposing molecules...')
 
     results = []
+    accepted_records = []
     oring = []
     formula = []
     frags_stat = {}
     frags_type = {}
     prop_calu = False
     if properties is not None and len(properties) == len(smiles):
-        props = list(properties)
+        props = []
     else:
         props = []
         prop_calu = True
@@ -139,6 +155,8 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
     ii = 0
     print('processing frag data...')
     for input_index, frag in enumerate(tqdm(frags)):
+        if method == 'pamf' and frag is None:
+            continue
         try:
             tmp = []
             frag = frag[0]
@@ -156,16 +174,6 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
                 else:
                     raw_mol_props = None
 
-                type = t['type']
-                if type not in frags_type:
-                    frags_type[type] = {}
-
-                o = t['smiles_wo_index']
-                if o not in frags_type[type]:
-                    frags_type[type][o] = 1
-                else:
-                    frags_type[type][o] += 1
-
                 if 'J' in structure:
                     flag = False
                     break
@@ -175,21 +183,41 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
             if not flag:
                 raise ValueError('Unsupported J fragment')
         except Exception as e:
+            if method == 'pamf':
+                tqdm.write(f'PAMF skipped input[{input_index}] {smiles[input_index]!r}: {e}')
+                continue
             raise ValueError(f'Decomposition input[{input_index}] {smiles[input_index]!r}: {e}') from e
 
         results.append(tmp)
+        accepted_records.append(frag)
         oring.append(original_smiles)
-        if properties is None:
-            props.append(frag['prop'])
+        props.append(frag['prop'] if properties is None else properties[input_index])
         pass
 
     import json
+    frags_type = _fragment_statistics(accepted_records)
     with open("stru_data.json", "w", encoding="utf-8") as f:
         json.dump(frags_type, f, ensure_ascii=False, indent=4)
     if statistic_only:
         return None, None, None, None, frags_type
     else:
         print('advance molecular decomposition')
+        if method == 'pamf':
+            converted = _process_list_parallel(results, num_cores=n_core,
+                                               process_func=_pamf_tokens_safe) if results else []
+            kept = []
+            sentences, results2 = [], []
+            for index, row in enumerate(converted):
+                if isinstance(row, dict) and 'error' in row:
+                    tqdm.write(f'PAMF skipped {oring[index]!r} during token conversion: {row["error"]}')
+                    continue
+                kept.append(index)
+                sentences.append(row[0])
+                results2.append(row[1])
+            frags_type = _fragment_statistics([accepted_records[i] for i in kept])
+            with open('stru_data.json', 'w', encoding='utf-8') as handle:
+                json.dump(frags_type, handle, ensure_ascii=False, indent=4)
+            return sentences, results2, [oring[i] for i in kept], [props[i] for i in kept], frags_type
         import constant
         index = 0
         mols = _process_list_parallel(results, num_cores=n_core, process_func=_mol_decom_frag_decom)
@@ -207,6 +235,16 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
 
     print('molecule decomposing done')
     return sentences, results2, oring, props, frags_type
+
+def _fragment_statistics(records):
+    counts = {}
+    for record in records:
+        for fragment in record['fragments']:
+            group = counts.setdefault(fragment['type'], {})
+            smiles = fragment['smiles_wo_index']
+            group[smiles] = group.get(smiles, 0) + 1
+    return counts
+
 
 def _mol_data(mol):
     mol = mol

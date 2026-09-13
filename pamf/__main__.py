@@ -21,7 +21,10 @@ def main():
     parser.add_argument('--strict-max-size', action='store_true')
     parser.add_argument('--conformers', type=int, default=10)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--timeout', type=float, default=300)
+    parser.add_argument('--timeout', type=float, default=300, help='CLI wall-clock timeout in seconds (cli only)')
+    parser.add_argument('--xtb-backend', choices=['tblite', 'cli'], default='cli')
+    parser.add_argument('--tblite-max-iterations', type=int, default=250,
+                        help='tblite SCC iteration limit; not a wall-clock timeout')
     parser.add_argument('--threads', type=int, default=1)
     parser.add_argument('--xtb', default='xtb', metavar='PATH',
                         help='xTB CLI executable (default: resolve xtb from PATH)')
@@ -42,6 +45,7 @@ def main():
                                 strict_max_size=args.strict_max_size, conformer_count=args.conformers,
                                 random_seed=args.seed, xtb_timeout=args.timeout, xtb_threads=args.threads,
                                 xtb_executable=args.xtb, unpaired_electrons=args.unpaired,
+                                xtb_backend=args.xtb_backend, tblite_max_iterations=args.tblite_max_iterations,
                                 beam_width=args.beam_width)
             reference = json.loads(args.reference.read_text(encoding='utf-8')) if args.reference else None
             if args.smiles is not None:

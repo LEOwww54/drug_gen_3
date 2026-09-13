@@ -1,9 +1,4 @@
 if "__main__" == __name__:
-    from ZINC_250K.dataloader import data_from_ZINC_250K as loader
-    from pamf.pipeline import fragment_smiles as decompose
-    smiles = loader()[1]
-    smiles = smiles [:100]
-    result = []
-    for i in smiles:
-        result.append(decompose(i))
-    print()
+    from ZINC_250K.dataprocess import mol_decomp_mp_ZINC_250K_pamf_pkl
+
+    mol_decomp_mp_ZINC_250K_pamf_pkl(60)

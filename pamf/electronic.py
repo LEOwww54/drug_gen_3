@@ -142,7 +142,7 @@ def run_xtb(mol_h, conf_id, timeout=300, threads=1, unpaired=None,
             raise ValueError('xTB charges do not sum to the input formal charge')
         result = dict(wbo=wbo, charges=charges,
                     polarizabilities=parse_polarizabilities(process.stdout, n),
-                    metadata=dict(method='GFN2-xTB', calculation='singlepoint', command=command,
+                    metadata=dict(method='GFN2-xTB', backend='cli', calculation='singlepoint', command=command,
                                   charge=charge, unpaired_electrons=uhf, conformer_id=conf_id,
                                   xyz_atomic_numbers=[a.GetAtomicNum() for a in mol_h.GetAtoms()],
                                   version_lines=[s.strip() for s in process.stdout.splitlines()

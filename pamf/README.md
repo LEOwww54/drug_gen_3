@@ -13,7 +13,17 @@ python -m pip install -r pamf/requirements.txt
 python -m pamf --smiles "CCCOCCNCCC" --output pamf_result.json
 ```
 
-默认 `xtb` 模式直接调用 PATH 中的 **GFN2-xTB 命令行程序**：
+默认 `mode='xtb', xtb_backend='cli'`，调用外部 xtb.exe。
+可选 `PAMFConfig(xtb_backend='tblite')` 或 `--xtb-backend tblite`，通过 Python
+进程内的 tblite 库计算，不读写 XYZ/WBO 中间文件。
+Windows 的可选 tblite 后端推荐使用 conda-forge 0.7 预编译包及 OpenBLAS：
+
+```powershell
+conda install -n drug-gen-3 --override-channels -c https://conda.anaconda.org/conda-forge "tblite-python=0.7" "libblas=*=*openblas" threadpoolctl
+```
+
+`PAMFConfig(xtb_backend='cli')` 或 `--xtb-backend cli` 可选择原来的外部程序后端。
+以下 PATH、可执行文件路径和临时文件说明仅适用于 **cli 后端**。
 
 Windows 下若 IDE 仍保留修改前的 PATH，程序会在进程 PATH 查找失败后，
 读取注册表中最新的系统及用户 PATH 来定位 xTB，无需为此重启 IDE。
@@ -28,10 +38,19 @@ XYZ 参数使用绝对路径，Windows 路径分隔符转换为 `/`，通过参�
 若 xTB 不在 PATH 中，可显式指定可执行文件（包含空格的路径也支持）：
 
 ```powershell
-python -m pamf --smiles "CCCOCCNCCC" --xtb "C:\path to\xtb.exe"
+python -m pamf --smiles "CCCOCCNCCC" --xtb-backend cli --xtb "C:\path to\xtb.exe"
 ```
 
-Python API 对应使用 `PAMFConfig(xtb_executable=r"C:\path to\xtb.exe")`。
+Python API 对应使用 `PAMFConfig(xtb_backend='cli', xtb_executable=r"C:\path to\xtb.exe")`。
+
+tblite 使用 `tblite_max_iterations=250`（CLI 参数 `--tblite-max-iterations`）
+限制 SCC 迭代次数。`xtb_timeout` / `--timeout` **仅对 cli 生效**；进程内 tblite
+没有墙钟超时，批量失败时已运行的计算仍会等待结束。结果 warnings 和 metadata
+会明确记录此差异。tblite 缺失或不收敛不会自动切换后端。
+
+tblite 返回完整键级矩阵，CLI 读取稀疏 WBO，因此 cross-WBO 及最终切割可能有差异；
+训练 reference 应使用相同后端重新拟合。tblite 暂不提供可选原子极化率，填 `None`。
+元数据记录 backend、版本、线程数、迭代上限及键级表示方式。
 
 `pip install xtb` 的 Python 接口不等于本模块调用的 CLI。Windows 可使用兼容的
 原生 xTB 构建；若通过 WSL 安装，则应在 WSL 内用 Linux Python、RDKit 和 xTB
@@ -67,8 +86,9 @@ if __name__ == '__main__':
 
 这里 `frags` 保持原接口的 token 列表格式，而非 PAMF 的片段 SMILES；
 适配层将片段转换为原记录结构并保留连接同位素和对称性属性。
-`sentences[i]`、`frags[i]`、`originals[i]`、`props[i]` 均对应输入第 i 项，
-保留重复输入。属性数量不匹配或分解失败时抛错，防止跳行后错配属性。
+`sentences[i]`、`frags[i]`、`originals[i]`、`props[i]` 相互对齐，
+PAMF 分解或 token 转换失败的行同步过滤，保留成功样本的原始顺序及重复输入。
+属性数量必须与原始输入相同，随后根据成功样本索引过滤。
 `statistic_only=True` 保持原来的仅统计返回约定，PAMF 统计类型名为 `pamf`。
 
 批量多进程接口（Windows 下必须在 `if __name__ == '__main__':` 中调用）：
@@ -80,27 +100,40 @@ if __name__ == '__main__':
     smiles = ['CCCCCC', 'CCCOCCC', 'CCCCCC']
     config = PAMFConfig(xtb_threads=1)
     fragments = fragment_smiles_batch(smiles, config, workers=4)
-    # fragments[i] 是 smiles[i] 对应的 list[str]，重复输入保留位置。
+    # 成功样本按输入顺序返回，失败样本跳过，重复成功样本保留。
     by_smiles = fragment_smiles_batch(
         smiles, config, workers=4, return_format='dict')
     # by_smiles[原始SMILES] -> list[str]，重复键合并。
 ```
 
-推荐默认 `list[list[str]]`：适合数据集逐行对齐，保留重复样本和顺序。
+推荐默认 `list[list[str]]`：保留成功样本的重复项和相对顺序。
+失败后返回列表长度会变短；需要对齐外部属性时使用：
+
+```python
+fragments, indices = fragment_smiles_batch(
+    smiles, config, workers=4, return_indices=True)
+successful_smiles = [smiles[i] for i in indices]
+# successful_properties = [properties[i] for i in indices]
+```
+
+`return_indices=True` 仅用于 list 输出，索引指向原始输入（从零开始）。
 `dict[str, list[str]]` 适合按 SMILES 查询，仅保留每个原始字符串的一个结果，
 按首次出现顺序排列；不会将不同写法的等价 SMILES 自动归并。
 两种形式都在单次调用中对完全相同的字符串去重计算；list 中每项是独立列表，
 修改重复样本的一项不会影响其他项。返回值保留 PAMF 的成对连接标记。
 
 输入列表、配置和 reference 在入口建立快照。使用 spawn 独立进程，
-子进程内部创建 RDKit 分子，每次 xTB 计算使用独立临时目录和子进程环境；
+子进程内部创建 RDKit 分子和 tblite 计算器；cli 计算使用独立临时目录和子进程环境；
 父进程独占结果汇总，不使用共享可变结果字典或 Manager。
 待执行任务数量受限，避免一次性为整个数据集创建 Future；输入与最终输出仍驻留内存。
 `workers=1` 为串行，默认进程数依据 CPU 数与 `xtb_threads` 计算并受唯一输入数量限制。
 大数据集建议显式指定 `workers`，结合内存容量控制并发；CPU 使用量约为
 `workers * xtb_threads`（RDKit 构象阶段每进程单线程）。
-无效输入或计算失败会抛出含原始 SMILES 和从零开始的首次输入索引的异常，
-不返回部分结果。尚未运行的任务尽可能取消，已运行任务结束或达到 xTB timeout 后清理。
+默认 `on_error='skip'`：无效 SMILES 或计算异常会记录原始 SMILES 和首次输入索引，
+跳过该字符串的所有重复项并继续其他任务；全部失败返回空结果。
+`on_error='raise'` 可恢复遇错中断。进度包含失败任务，并显示失败计数。
+此机制捕获 Python 异常；底层库导致整个进程退出、内存耗尽等损坏进程池的故障
+仍会报错，不能作为普通分子失败忽略。缺失依赖应先修复再运行大数据集。
 在交互式环境中可使用 `workers=1`，多进程调用请放在可导入的 Python 脚本中。
 
 测试：`python -m unittest pamf.test_batch -v`；设置 `PAMF_RUN_XTB=1`
@@ -159,15 +192,15 @@ dummy 是切口处的终端原子。例如 `[1*]CC[2*]` 的两个 dummy 分别�
 5. 按重原子邻居索引选择候选键两侧二面角；计算圆方差
    `1 - abs(mean(exp(i * phi)))`。少于两个构象或缺少二面角时记为 `null`，
    不伪装成已测得的刚性。此值是有限采样的启发式，不是热力学收敛证明。
-6. 对最低力场能构象做一次 `GFN2-xTB --sp --wbo`。显式加氢后原原子索引保持
+6. 对最低力场能构象做一次 GFN2-xTB 单点计算（默认 cli 使用 `--sp --wbo`；可选 tblite）。显式加氢后原原子索引保持
    不变，XYZ 中增加 1 对应 xTB 索引；传入总形式电荷和未配对电子数。
    默认未配对数取 RDKit radical electron 总数，可用 `--unpaired` 指定，
    这不等于自动推断耦合自由基的真实基态多重度。
    电子特征不是构象平均值，也没有额外做 xTB 几何优化。
-7. 读取独立临时目录中的 `wbo`/`charges` 文件，验证索引、有限值与总电荷。
+7. tblite 直接提取键级矩阵和电荷，cli 读取独立临时目录中的 `wbo`/`charges` 文件；验证索引、有限值与总电荷。
    保存切口 WBO、切键后两侧半径 2 跳重原子邻域的 cross-WBO 和电荷差；
    若标准输出含原子极化率表则记录，否则为 `null`。电荷差/极化率只作描述符。
-   cross-WBO 使用 xTB 稀疏输出，未报告的非键原子对按零处理，因此它是截断近似，
+   cli 的 cross-WBO 使用稀疏输出，未报告的非键原子对按零处理，因此它是截断近似（tblite 使用完整矩阵），
    不是完整密度矩阵意义的精确电子耦合。候选化学键本身缺 WBO 时直接报错。
 8. 候选评分为
    `w_rot*rotatable + w_boundary*boundary + w_flex*torsion_variability
@@ -241,6 +274,13 @@ python -m unittest pamf.test_pamf.PhysicsTests.test_real_xtb -v
 默认测试执行真实 RDKit 化学/构象计算，xTB 协议测试使用 mock；真实 xTB 测试
 需要单独启用。这不能替代对实际 xTB 构建版本的集成验证。
 
+可选 tblite 后端的真实计算与多进程测试：
+
+```powershell
+$env:PAMF_RUN_TBLITE = '1'
+python -m unittest pamf.test_tblite -v
+```
+
 CREST 构象搜索、ORCA/DFT 验证、Multiwfn/AIMAll QTAIM，以及 GNN surrogate
 属于聊天方案的后续阶段，本版不依赖也不调用。与既有 FST tokenizer 的自动对接
 需单独适配其记录格式；这里提供完整 SMILES 和连接表供该步骤使用。
@@ -248,4 +288,5 @@ CREST 构象搜索、ORCA/DFT 验证、Multiwfn/AIMAll QTAIM，以及 GNN surrog
 接口依据：
 [RDKit 切割与 molzip](https://www.rdkit.org/docs/source/rdkit.Chem.rdmolops.html)、
 [xTB 属性输出](https://xtb-docs.readthedocs.io/en/latest/properties.html)、
-[xTB CLI](https://xtb-docs.readthedocs.io/en/latest/commandline.html)。
+[xTB CLI](https://xtb-docs.readthedocs.io/en/latest/commandline.html)、
+[tblite Python API](https://tblite.readthedocs.io/en/latest/api/python.html)。

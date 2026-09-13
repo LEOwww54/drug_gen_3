@@ -6,6 +6,7 @@ from rdkit import Chem, rdBase
 from .chemistry import parse_smiles, analyze_bonds, make_fragments
 from .geometry import conformers, torsion_variability
 from .electronic import run_xtb, add_electronic_features
+from .tblite_backend import run_tblite
 from .optimizer import select_cuts
 from .scoring import score_candidates
 
@@ -23,6 +24,8 @@ class PAMFConfig:
     xtb_timeout: float = 300
     xtb_threads: int = 1
     xtb_executable: str = 'xtb'
+    xtb_backend: str = 'cli'
+    tblite_max_iterations: int = 250
     unpaired_electrons: int | None = None
     exact_candidate_limit: int = 14
     beam_width: int = 128
@@ -39,7 +42,9 @@ class PAMFConfig:
     def __post_init__(self):
         if self.mode not in ('xtb', 'rules'):
             raise ValueError('mode must be xtb or rules')
-        for name in ('min_heavy_atoms', 'max_heavy_atoms', 'conformer_count', 'xtb_threads', 'beam_width'):
+        if self.xtb_backend not in ('tblite', 'cli'):
+            raise ValueError('xtb_backend must be tblite or cli')
+        for name in ('min_heavy_atoms', 'max_heavy_atoms', 'conformer_count', 'xtb_threads', 'beam_width', 'tblite_max_iterations'):
             value = getattr(self, name)
             if type(value) is not int or value < 1:
                 raise ValueError(f'{name} must be a positive integer')
@@ -103,9 +108,16 @@ def decompose_smiles(smiles, config=None, *, reference=None):
         torsions = torsion_variability(mol_h, candidates, conf_ids)
         for row in candidates:
             row['torsion_variability'] = torsions[row['bond_idx']]
-        data = run_xtb(mol_h, conf_ids[0], timeout=config.xtb_timeout,
-                       threads=config.xtb_threads, unpaired=config.unpaired_electrons,
-                       executable=config.xtb_executable)
+        if config.xtb_backend == 'tblite':
+            data = run_tblite(mol_h, conf_ids[0], threads=config.xtb_threads,
+                              unpaired=config.unpaired_electrons,
+                              max_iterations=config.tblite_max_iterations)
+            warnings.append('tblite uses dense WBO; CLI sparse-WBO reference statistics may not be compatible.')
+            warnings.append('xtb_timeout applies only to cli; tblite uses tblite_max_iterations, without a wall-clock timeout.')
+        else:
+            data = run_xtb(mol_h, conf_ids[0], timeout=config.xtb_timeout,
+                           threads=config.xtb_threads, unpaired=config.unpaired_electrons,
+                           executable=config.xtb_executable)
         add_electronic_features(mol, candidates, data, config.cross_radius)
         electronics = data['metadata']
         electronics['parent_to_xyz_index'] = list(range(1, mol.GetNumAtoms()+1))
