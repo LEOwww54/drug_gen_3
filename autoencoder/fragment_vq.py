@@ -3,6 +3,7 @@
 This module deliberately has no dependency on the GPT/tokenizer pipeline.
 """
 import json
+import multiprocessing as mp
 from pathlib import Path
 
 import torch
@@ -10,6 +11,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import Dataset
 from rdkit import Chem
+from tqdm import tqdm
 
 
 FEATURE_VERSION = 1
@@ -60,15 +62,45 @@ def fragment_graph(value, max_nodes):
                 n_nodes=torch.tensor(n), smiles=smiles)
 
 
+def _fragment_worker_init():
+    torch.set_num_threads(1)
+
+
+def _fragment_worker(job):
+    index, fragment, max_nodes = job
+    try:
+        sample = fragment_graph(fragment, max_nodes)
+        # Send owned arrays, not shared Torch storage/handles for every sample.
+        return {k: v.numpy() if torch.is_tensor(v) else v for k, v in sample.items()}
+    except Exception as exc:
+        raise ValueError(f'Fragment input[{index}] failed: {exc}') from exc
+
+
 class FragmentDataset(Dataset):
-    def __init__(self, fragments, max_nodes=70):
+    def __init__(self, fragments, max_nodes=70, *, num_workers=1, show_progress=True):
+        """Build CPU graphs; spawn workers optionally, retaining first-occurrence order."""
+        if isinstance(num_workers, bool) or not isinstance(num_workers, int) or num_workers < 1:
+            raise ValueError('num_workers must be a positive integer')
+        fragments = list(fragments)
         self.samples = []
         seen = set()
-        for fragment in fragments:
-            sample = fragment_graph(fragment, max_nodes)
-            if sample['smiles'] not in seen:
-                self.samples.append(sample)
-                seen.add(sample['smiles'])
+        def collect(samples, arrays=False):
+            for sample in tqdm(samples, total=len(fragments), desc='Fragment graphs',
+                               unit='frag', disable=not show_progress):
+                if sample['smiles'] not in seen:
+                    if arrays:
+                        sample = {k: torch.from_numpy(v) if k != 'smiles' else v
+                                  for k, v in sample.items()}
+                    self.samples.append(sample)
+                    seen.add(sample['smiles'])
+        if num_workers == 1 or not fragments:
+            collect(fragment_graph(fragment, max_nodes) for fragment in fragments)
+        else:
+            jobs = ((i, fragment, max_nodes) for i, fragment in enumerate(fragments))
+            with mp.get_context('spawn').Pool(
+                    processes=min(num_workers, mp.cpu_count(), len(fragments)),
+                    initializer=_fragment_worker_init) as pool:
+                collect(pool.imap(_fragment_worker, jobs, chunksize=32), arrays=True)
         if not self.samples:
             raise ValueError('No fragments supplied')
 

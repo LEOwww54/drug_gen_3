@@ -10,6 +10,35 @@ from autoencoder.train_vq import train_vq
 
 
 class FragmentVQTests(unittest.TestCase):
+    def test_batch_loss_logging(self):
+        from autoencoder.train_vq import run_epoch
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
+        with patch('autoencoder.train_vq.tqdm.write') as write:
+            losses, _ = run_epoch(self.model, [self.batch] * 101, 'cpu', optimizer,
+                                  show_progress=False, desc='Epoch 1/1 train')
+        import json
+        self.assertEqual(write.call_count, 1)
+        logged = json.loads(write.call_args.args[0])
+        self.assertEqual(logged['batch'], 100)
+        self.assertIn('total', logged['current_loss'])
+        self.assertTrue(torch.isfinite(torch.tensor(losses['total'])))
+        with patch('autoencoder.train_vq.tqdm.write') as write:
+            run_epoch(self.model, [self.batch] * 100, 'cpu', show_progress=False)
+        write.assert_not_called()
+
+    def test_parallel_dataset_matches_serial(self):
+        smiles = ['[1*]CC', 'CO', 'CC[2*]', 'c1ccccc1', 'C'] * 8
+        serial = FragmentDataset(smiles, 10, show_progress=False)
+        parallel = FragmentDataset(smiles, 10, num_workers=2, show_progress=False)
+        self.assertEqual(len(serial), len(parallel))
+        for first, second in zip(serial, parallel):
+            self.assertEqual(first['smiles'], second['smiles'])
+            for key in first:
+                if torch.is_tensor(first[key]):
+                    torch.testing.assert_close(first[key], second[key])
+        with self.assertRaisesRegex(ValueError, r'input\[1\]'):
+            FragmentDataset(['CC', 'invalid'], 10, num_workers=2, show_progress=False)
+
     def setUp(self):
         torch.manual_seed(7)
         torch.set_num_threads(1)

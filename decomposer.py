@@ -4,11 +4,12 @@ import pickle
 
 
 def mol_decom_mp(smiles, n_core, output_format='pkl', output_path=[], version=1, properties=None, stat_only=False,
-                 *, method='legacy', pamf_config=None, pamf_reference=None):
+                 *, method='legacy', pamf_config=None, pamf_reference=None,
+                 statistics_path='stru_data.json'):
     sentences, frags, oring, props, frags_stat, fragment_smiles = _mol_decom_mp(
         smiles, n_core, properties=properties, statistic_only=stat_only, version=version,
         method=method, pamf_config=pamf_config, pamf_reference=pamf_reference,
-        return_fragment_smiles=True)
+        return_fragment_smiles=True, statistics_path=statistics_path)
     if stat_only:
         return sentences, frags, oring, props, frags_stat
 

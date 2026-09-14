@@ -13,7 +13,8 @@ def mol_decomp_mp_ZINC_250K_pamf_pkl(n_core, *, pamf_config=None, pamf_reference
         path = f'gpt/frag_file/frag_decom_ZINC_250K_pamf_{split}.pkl'
         result = mol_decom_mp(
             smiles=smiles, n_core=n_core, output_format='pkl', output_path=[path],
-            method='pamf', pamf_config=pamf_config, pamf_reference=pamf_reference)
+            method='pamf', pamf_config=pamf_config, pamf_reference=pamf_reference,
+            statistics_path=f'stru_data_ZINC_250K_pamf_{split}.json')
         results.extend(result[1])
     return results
 
@@ -24,10 +25,12 @@ def mol_decomp_mp_ZINC_250K_pkl(n_core, stat_mode = False):
     path2 = 'gpt/frag_file/frag_decom_ZINC_250K_test.pkl'
 
     result = \
-    mol_decom_mp(smiles=train, n_core=n_core, output_format='pkl', output_path=[path], stat_only=stat_mode)[1]
+    mol_decom_mp(smiles=train, n_core=n_core, output_format='pkl', output_path=[path], stat_only=stat_mode,
+                 statistics_path='stru_data_ZINC_250K_legacy_train.json')[1]
     # #result1 = mol_decom_mp(smiles=smiles, n_core=n_core, output_format='pkl', output_path=[path1], stat_only=stat_mode)
     result2 = \
-    mol_decom_mp(smiles=test, n_core=n_core, output_format='pkl', output_path=[path2], stat_only=stat_mode)[1]
+    mol_decom_mp(smiles=test, n_core=n_core, output_format='pkl', output_path=[path2], stat_only=stat_mode,
+                 statistics_path='stru_data_ZINC_250K_legacy_test.json')[1]
 
     result.extend(result2)
 
@@ -35,5 +38,6 @@ def mol_decomp_mp_ZINC_250K_pkl(n_core, stat_mode = False):
 
 def test_decompose_all():
     train, test, all = data_from_ZINC_250K()
-    return mol_decom_mp(smiles=all, n_core=60, output_format='pkl', output_path=['test'])
+    return mol_decom_mp(smiles=all, n_core=60, output_format='pkl', output_path=['test'],
+                        statistics_path='stru_data_ZINC_250K_legacy_all.json')
 

@@ -31,7 +31,9 @@ def _mol_decomp_mp_ZINC_refined(n_core, stat_mode = False):
     path = 'gpt/frag_file/frag_decom_ZINC_refined_train.pkl'
     path1 = 'gpt/frag_file/frag_decom_ZINC_refined_test.pkl'
 
-    result = mol_decom_mp(smiles=smiles['train'], n_core=n_core, output_format='pkl', output_path=[path], stat_only=stat_mode)
-    result2 = mol_decom_mp(smiles=smiles['test'], n_core=n_core, output_format='pkl', output_path=[path1], stat_only=stat_mode)
+    result = mol_decom_mp(smiles=smiles['train'], n_core=n_core, output_format='pkl', output_path=[path], stat_only=stat_mode,
+                         statistics_path='stru_data_ZINC_refined_legacy_train.json')
+    result2 = mol_decom_mp(smiles=smiles['test'], n_core=n_core, output_format='pkl', output_path=[path1], stat_only=stat_mode,
+                          statistics_path='stru_data_ZINC_refined_legacy_test.json')
 
     return result, result2

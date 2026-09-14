@@ -1,4 +1,5 @@
 import os
+import multiprocessing as mp
 from rdkit.Chem import MACCSkeys
 from rdkit.Chem import rdFingerprintGenerator
 from rdkit.Chem import Recap
@@ -66,22 +67,39 @@ def _pamf_frag_records(smiles, n_core, config=None, reference=None, prop_calu=Tr
                                              return_format='list', reference=reference,
                                              return_indices=True)
     records = [None] * len(smiles)
-    for index, fragments in zip(indices, batches):
-        original = smiles[index]
-        try:
-            records[index] = _pamf_one_record(original, fragments, prop_calu)
-        except Exception as exc:
-            tqdm.write(f'PAMF skipped input[{index}] {original!r} during adaptation: {exc}')
+    jobs = ((index, smiles[index], fragments, prop_calu)
+            for index, fragments in zip(indices, batches))
+    def collect(results):
+        for index, record, error in tqdm(results, total=len(indices),
+                                          desc='PAMF record conversion', unit='mol'):
+            records[index] = record
+            if error is not None:
+                tqdm.write(f'PAMF skipped input[{index}] {smiles[index]!r} during adaptation: {error}')
+    if n_core == 1 or not indices:
+        collect(map(_pamf_one_record_safe, jobs))
+    else:
+        with mp.get_context('spawn').Pool(processes=min(n_core, mp.cpu_count(), len(indices))) as pool:
+            collect(pool.imap_unordered(_pamf_one_record_safe, jobs, chunksize=1))
     return records
+
+
+def _pamf_one_record_safe(job):
+    """Picklable worker; only the parent updates aligned records and progress."""
+    index, original, fragments, prop_calu = job
+    try:
+        return index, _pamf_one_record(original, fragments, prop_calu), None
+    except Exception as exc:
+        return index, None, f'{type(exc).__name__}: {exc}'
 
 
 def _pamf_statistics_smiles(mol):
     """Canonical independent components after deleting dummy attachment atoms.
 
     Work on a copy so attachment IDs used by tokenization/PKL remain intact.
-    RDKit recomputes implicit hydrogens at the exposed attachment sites.
+    Kekulize before deletion, then sanitize to recompute hydrogens/aromaticity.
     """
     clean = Chem.RWMol(mol)
+    Chem.Kekulize(clean, True)
     for atom in clean.GetAtoms():
         atom.SetAtomMapNum(0)
     for index in reversed([a.GetIdx() for a in clean.GetAtoms()
@@ -126,11 +144,12 @@ def _pamf_tokens_safe(frags):
 
 def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version=1,
                   *, method='legacy', pamf_config=None, pamf_reference=None,
-                  return_fragment_smiles=False):
+                  return_fragment_smiles=False, statistics_path='stru_data.json'):
     """Select legacy (version 0/1) or pamf; all returned rows follow input order.
 
     PAMF failures are skipped; properties are filtered by the same input indices.
     Set return_fragment_smiles to append an aligned list of fragment SMILES lists.
+    statistics_path selects the JSON output; None disables writing statistics.
     """
     smiles = list(smiles)
     if n_core < 1:
@@ -221,8 +240,7 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
 
     import json
     frags_type = _fragment_statistics(accepted_records)
-    with open("stru_data.json", "w", encoding="utf-8") as f:
-        json.dump(frags_type, f, ensure_ascii=False, indent=4)
+    _save_fragment_statistics(frags_type, statistics_path)
     if statistic_only:
         output = (None, None, None, None, frags_type)
         return output + (None,) if return_fragment_smiles else output
@@ -241,8 +259,7 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
                 sentences.append(row[0])
                 results2.append(row[1])
             frags_type = _fragment_statistics([accepted_records[i] for i in kept])
-            with open('stru_data.json', 'w', encoding='utf-8') as handle:
-                json.dump(frags_type, handle, ensure_ascii=False, indent=4)
+            _save_fragment_statistics(frags_type, statistics_path)
             output = (sentences, results2, [oring[i] for i in kept], [props[i] for i in kept], frags_type)
             return output + ([fragment_smiles[i] for i in kept],) if return_fragment_smiles else output
         import constant
@@ -263,6 +280,16 @@ def _mol_decom_mp(smiles, n_core, properties=None, statistic_only=False, version
     print('molecule decomposing done')
     output = (sentences, results2, oring, props, frags_type)
     return output + (fragment_smiles,) if return_fragment_smiles else output
+
+def _save_fragment_statistics(statistics, path):
+    if path is None:
+        return
+    import json
+    from pathlib import Path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as handle:
+        json.dump(statistics, handle, ensure_ascii=False, indent=4)
+
 
 def _fragment_statistics(records):
     counts = {}
