@@ -141,7 +141,7 @@ if __name__ == '__main__':
     subsmiles1.extend(subsmiles2)
     train = list(set(subsmiles1))
 
-    train_vq(50, 2e-4,
+    train_vq(100, 8e-5,
              train,
              checkpoint='autoencoder/fragment_vq.pth', batch_size=256,
              max_nodes=45, num_codes=5,
