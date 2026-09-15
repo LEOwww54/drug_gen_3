@@ -17,6 +17,7 @@ from tqdm import tqdm
 FEATURE_VERSION = 1
 BONDS = [None, Chem.BondType.SINGLE, Chem.BondType.DOUBLE,
          Chem.BondType.TRIPLE, Chem.BondType.AROMATIC]
+PAD_ATOM, DUMMY_ATOM, UNKNOWN_ATOM = 0, 1, 2
 
 
 def canonical_fragment(value):
@@ -34,23 +35,53 @@ def canonical_fragment(value):
     return smiles, Chem.MolFromSmiles(smiles)
 
 
-def fragment_graph(value, max_nodes):
+def collect_atom_vocabulary(fragments):
+    """Return sorted real atomic numbers observed in a fragment collection."""
+    atomic_numbers = set()
+    for value in fragments:
+        _, mol = canonical_fragment(value)
+        atomic_numbers.update(atom.GetAtomicNum() for atom in mol.GetAtoms()
+                              if atom.GetAtomicNum() > 0)
+    if not atomic_numbers:
+        raise ValueError('No real atom elements found while building atom vocabulary')
+    return sorted(atomic_numbers)
+
+
+def atom_vocabulary_metadata(atom_vocabulary):
+    """Human-readable, checkpoint-safe description of the compact vocabulary."""
+    table = Chem.GetPeriodicTable()
+    return dict(padding=PAD_ATOM, dummy=DUMMY_ATOM, unknown=UNKNOWN_ATOM,
+                elements=[dict(id=i + 3, atomic_number=z,
+                               symbol=table.GetElementSymbol(z))
+                          for i, z in enumerate(atom_vocabulary)])
+
+
+def fragment_graph(value, max_nodes, atom_vocabulary=None):
     smiles, mol = canonical_fragment(value)
     n = mol.GetNumAtoms()
     if n > max_nodes:
         raise ValueError(f'Fragment has {n} atoms; max_nodes={max_nodes}')
-    # Padding=0, dummy=1, real elements=atomic number+1.
+    # Legacy checkpoints use atomic number + 1. New checkpoints use a compact
+    # vocabulary: padding=0, dummy=1, unknown=2, observed real elements=3...
     atoms = torch.zeros(max_nodes, dtype=torch.long)
     charge = torch.zeros_like(atoms)
     aromatic = torch.zeros_like(atoms)
     hydrogens = torch.zeros_like(atoms)
     bonds = torch.zeros(max_nodes, max_nodes, dtype=torch.long)
+    atom_to_id = ({z: index + 3 for index, z in enumerate(atom_vocabulary)}
+                  if atom_vocabulary is not None else None)
     for atom in mol.GetAtoms():
         i, q = atom.GetIdx(), atom.GetFormalCharge()
         h = atom.GetTotalNumHs()
         if not -5 <= q <= 5 or h > 8:
             raise ValueError('Unsupported formal charge or hydrogen count')
-        atoms[i] = atom.GetAtomicNum() + 1
+        atomic_number = atom.GetAtomicNum()
+        if atom_vocabulary is None:
+            atoms[i] = atomic_number + 1
+        elif atomic_number == 0:
+            atoms[i] = DUMMY_ATOM
+        else:
+            atoms[i] = atom_to_id.get(atomic_number, UNKNOWN_ATOM)
         charge[i], aromatic[i], hydrogens[i] = q + 5, int(atom.GetIsAromatic()), h
     for bond in mol.GetBonds():
         if bond.GetBondType() not in BONDS:
@@ -67,9 +98,9 @@ def _fragment_worker_init():
 
 
 def _fragment_worker(job):
-    index, fragment, max_nodes = job
+    index, fragment, max_nodes, atom_vocabulary = job
     try:
-        sample = fragment_graph(fragment, max_nodes)
+        sample = fragment_graph(fragment, max_nodes, atom_vocabulary)
         # Send owned arrays, not shared Torch storage/handles for every sample.
         return {k: v.numpy() if torch.is_tensor(v) else v for k, v in sample.items()}
     except Exception as exc:
@@ -77,7 +108,8 @@ def _fragment_worker(job):
 
 
 class FragmentDataset(Dataset):
-    def __init__(self, fragments, max_nodes=70, *, num_workers=1, show_progress=True):
+    def __init__(self, fragments, max_nodes=70, *, atom_vocabulary=None,
+                 num_workers=1, show_progress=True):
         """Build CPU graphs; spawn workers optionally, retaining first-occurrence order."""
         if isinstance(num_workers, bool) or not isinstance(num_workers, int) or num_workers < 1:
             raise ValueError('num_workers must be a positive integer')
@@ -94,9 +126,11 @@ class FragmentDataset(Dataset):
                     self.samples.append(sample)
                     seen.add(sample['smiles'])
         if num_workers == 1 or not fragments:
-            collect(fragment_graph(fragment, max_nodes) for fragment in fragments)
+            collect(fragment_graph(fragment, max_nodes, atom_vocabulary)
+                    for fragment in fragments)
         else:
-            jobs = ((i, fragment, max_nodes) for i, fragment in enumerate(fragments))
+            jobs = ((i, fragment, max_nodes, atom_vocabulary)
+                    for i, fragment in enumerate(fragments))
             with mp.get_context('spawn').Pool(
                     processes=min(num_workers, mp.cpu_count(), len(fragments)),
                     initializer=_fragment_worker_init) as pool:
@@ -188,13 +222,22 @@ class BondBlock(nn.Module):
 
 class FragmentVQAutoencoder(nn.Module):
     def __init__(self, max_nodes=70, d_model=128, latent_dim=128, n_heads=4,
-                 n_layers=3, num_codes=4, codebook_size=256, dropout=0.1):
+                 n_layers=3, num_codes=4, codebook_size=256, dropout=0.1,
+                 atom_vocabulary=None):
         super().__init__()
+        if atom_vocabulary is not None:
+            atom_vocabulary = sorted(set(atom_vocabulary))
+            if any(not isinstance(z, int) or isinstance(z, bool) or not 1 <= z <= 118
+                   for z in atom_vocabulary):
+                raise ValueError('atom_vocabulary must contain atomic numbers from 1 to 118')
+        self.atom_vocabulary = atom_vocabulary
+        self.atom_vocab_size = 120 if atom_vocabulary is None else len(atom_vocabulary) + 3
         self.config = dict(max_nodes=max_nodes, d_model=d_model, latent_dim=latent_dim,
                            n_heads=n_heads, n_layers=n_layers, num_codes=num_codes,
-                           codebook_size=codebook_size, dropout=dropout)
+                           codebook_size=codebook_size, dropout=dropout,
+                           atom_vocabulary=atom_vocabulary)
         self.max_nodes = max_nodes
-        self.atom = nn.Embedding(120, d_model, padding_idx=0)
+        self.atom = nn.Embedding(self.atom_vocab_size, d_model, padding_idx=0)
         self.charge = nn.Embedding(11, d_model)
         self.aromatic = nn.Embedding(2, d_model)
         self.hydrogens = nn.Embedding(9, d_model)
@@ -207,7 +250,8 @@ class FragmentVQAutoencoder(nn.Module):
                                            batch_first=True)
         self.decoder = nn.TransformerEncoder(layer, n_layers, enable_nested_tensor=False)
         self.heads = nn.ModuleDict({name: nn.Linear(d_model, size) for name, size in
-                                   [('atoms', 120), ('charge', 11), ('aromatic', 2), ('hydrogens', 9)]})
+                                   [('atoms', self.atom_vocab_size), ('charge', 11),
+                                    ('aromatic', 2), ('hydrogens', 9)]})
         self.edge = nn.Linear(d_model * 2, 5)
         self.length = nn.Linear(latent_dim, max_nodes + 1)
         self.register_buffer('pairs', torch.triu_indices(max_nodes, max_nodes, 1), persistent=False)
@@ -256,7 +300,8 @@ class FragmentVQAutoencoder(nn.Module):
         training = self.training
         self.eval()
         try:
-            samples = [fragment_graph(f, self.max_nodes) for f in fragments]
+            samples = [fragment_graph(f, self.max_nodes, self.atom_vocabulary)
+                       for f in fragments]
             if not samples:
                 return []
             batch = default_collate(samples)
@@ -272,6 +317,8 @@ class FragmentVQAutoencoder(nn.Module):
     def save(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         torch.save(dict(feature_version=FEATURE_VERSION, config=self.config,
+                        atom_vocabulary=atom_vocabulary_metadata(self.atom_vocabulary)
+                        if self.atom_vocabulary is not None else None,
                         model_state_dict=self.state_dict()), path)
 
     @classmethod

@@ -79,7 +79,9 @@ def main():
     fragments = sorted(set(f for p in args.inputs for f in read_fragments(p)))
     order = torch.randperm(len(fragments), generator=torch.Generator().manual_seed(args.seed))
     chosen = [fragments[i] for i in order[:args.samples].tolist()]
-    dataset = FragmentDataset(chosen, model.max_nodes, show_progress=False)
+    dataset = FragmentDataset(chosen, model.max_nodes,
+                              atom_vocabulary=model.atom_vocabulary,
+                              show_progress=False)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
     baseline = measure(model, loader, args.device)
     report = dict(checkpoint=str(Path(args.checkpoint).resolve()), config=model.config,

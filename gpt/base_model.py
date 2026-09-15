@@ -163,6 +163,7 @@ class MultiHeadAttention(nn.Module):
         self.p_type = p_type
         self.conditional = list(conditional)
         self.attention_mode = attention_mode
+        self.standard_attention = ScaledDotProductAttention(d_k, dropout=0.1)
 
         self.W_Q = nn.Linear(d_model, d_k * n_heads, bias=False)
         self.W_K = nn.Linear(d_model, d_k * n_heads, bias=False)
@@ -248,7 +249,7 @@ class MultiHeadAttention(nn.Module):
         else:
             # Cross-attention always comes through this path, even when property
             # conditioning is enabled elsewhere in the model.
-            context, attn = ScaledDotProductAttention(self.d_k, dropout=0.1)(Q, K, V, attn_mask)
+            context, attn = self.standard_attention(Q, K, V, attn_mask)
 
         context = context.transpose(1, 2).contiguous().view(batch_size, -1, self.n_heads * self.d_v)
         output = self.fc(context)

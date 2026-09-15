@@ -77,6 +77,18 @@ def frag_token_fun_1(tokenizer_, r : list):
 
     return idss
 
+def _split_validation_test(dataset, batch_size, collate_fn):
+    """Deterministic, disjoint holdout split; leave an odd extra sample for test."""
+    if len(dataset) < 2:
+        raise ValueError('At least two test samples are required when no validation set is provided')
+    valid_size = len(dataset) // 2
+    valid, test = Data.random_split(
+        dataset, [valid_size, len(dataset) - valid_size],
+        generator=torch.Generator().manual_seed(42))
+    return tuple(DataLoader(part, batch_size=batch_size, shuffle=False,
+                            collate_fn=collate_fn) for part in (valid, test))
+
+
 def get_frag_dataloader_without_split(token_fun, tokenizer_, batch_size=400, train_file = "gpt/frag_test.txt", valid_file='', test_file = '', multiset = 1, protein=True):
     total = 0
     datas = []
@@ -123,6 +135,9 @@ def get_frag_dataloader_without_split(token_fun, tokenizer_, batch_size=400, tra
         dataset_test = PLDataSet(datas)
         dataloader_test = DataLoader(dataset_test, batch_size=batch_size, shuffle=True,
                                       collate_fn=dataset_test.padding_batch)
+        if dataloader_valid is None:
+            dataloader_valid, dataloader_test = _split_validation_test(
+                dataset_test, batch_size, dataset_test.padding_batch)
     else:
         dataloader_test = None
 
@@ -382,7 +397,7 @@ class PAMFDataSet(PLDataSet):
 
 
 def get_pamf_dataloader_without_split(tokenizer_, train_file, test_file, *,
-                                     batch_size=50, require_properties=True):
+                                     batch_size=50, require_properties=True, valid_file=None):
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError('batch_size must be a positive integer')
     train = PAMFDataSet(train_file, tokenizer_, require_properties=require_properties)
@@ -398,7 +413,14 @@ def get_pamf_dataloader_without_split(tokenizer_, train_file, test_file, *,
                               collate_fn=train.padding_batch)
     test_loader = DataLoader(test, batch_size=batch_size, shuffle=False,
                              collate_fn=test.padding_batch)
-    return [train_loader], [None], [test_loader]
+    if valid_file:
+        valid = PAMFDataSet(valid_file, tokenizer_, require_properties=require_properties)
+        valid_loader = DataLoader(valid, batch_size=batch_size, shuffle=False,
+                                  collate_fn=valid.padding_batch)
+    else:
+        valid_loader, test_loader = _split_validation_test(test, batch_size, test.padding_batch)
+    print(f'PAMF validation={len(valid_loader.dataset)}, test={len(test_loader.dataset)}')
+    return [train_loader], [valid_loader], [test_loader]
 
 
 def load_protein_emb(pkl_file_path='gpt/protein2vector.pkl'):

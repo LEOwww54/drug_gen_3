@@ -7,7 +7,8 @@ from pathlib import Path
 import torch
 from tqdm import tqdm
 from torch.utils.data import DataLoader, random_split
-from autoencoder.fragment_vq import FragmentDataset, FragmentVQAutoencoder, read_fragments
+from autoencoder.fragment_vq import (FragmentDataset, FragmentVQAutoencoder,
+                                     collect_atom_vocabulary, read_fragments)
 
 
 def run_epoch(model, loader, device, optimizer=None, *, show_progress=True, desc=None):
@@ -41,6 +42,7 @@ def run_epoch(model, loader, device, optimizer=None, *, show_progress=True, desc
 
 
 def train_vq(epochs, learning_rate, smiles_list, *,
+             test_smiles_list=None,
              checkpoint='autoencoder/fragment_vq.pth', batch_size=64,
              max_nodes=70, num_codes=4, codebook_size=256, seed=42, device=None,
              num_workers=60, show_progress=True):
@@ -61,9 +63,16 @@ def train_vq(epochs, learning_rate, smiles_list, *,
         raise ValueError('learning_rate must be finite and positive')
     if not isinstance(smiles_list, list) or not all(isinstance(s, str) for s in smiles_list):
         raise TypeError('smiles_list must be a list of SMILES strings')
+    if test_smiles_list is None:
+        test_smiles_list = []
+    if (not isinstance(test_smiles_list, list)
+            or not all(isinstance(s, str) for s in test_smiles_list)):
+        raise TypeError('test_smiles_list must be a list of SMILES strings')
     device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
     torch.manual_seed(seed)
-    dataset = FragmentDataset(smiles_list, max_nodes, num_workers=num_workers,
+    atom_vocabulary = collect_atom_vocabulary(smiles_list + test_smiles_list)
+    dataset = FragmentDataset(smiles_list, max_nodes, atom_vocabulary=atom_vocabulary,
+                              num_workers=num_workers,
                               show_progress=show_progress)
     if len(dataset) < 2:
         raise ValueError('Training needs at least two distinct canonical fragments')
@@ -73,7 +82,8 @@ def train_vq(epochs, learning_rate, smiles_list, *,
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_data, batch_size=batch_size)
     model = FragmentVQAutoencoder(max_nodes=max_nodes, num_codes=num_codes,
-                                 codebook_size=codebook_size).to(device)
+                                 codebook_size=codebook_size,
+                                 atom_vocabulary=atom_vocabulary).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     best = float('inf')
     for epoch in range(epochs):
@@ -93,6 +103,7 @@ def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument('mode', choices=['train', 'export'])
     parser.add_argument('--input', required=True, help='Fragment SMILES text or statistics JSON')
+    parser.add_argument('--test-input', help='Optional test fragments included in the atom vocabulary')
     parser.add_argument('--checkpoint', default='autoencoder/fragment_vq.pth')
     parser.add_argument('--output', default='autoencoder/fragment_tokens.json')
     parser.add_argument('--epochs', type=int, default=50)
@@ -122,8 +133,10 @@ def main():
         return
     # read_fragments also supports JSON decomposition records.
     from autoencoder.fragment_vq import canonical_fragment
+    test_fragments = read_fragments(args.test_input) if args.test_input else []
     train_vq(args.epochs, args.learning_rate,
              [canonical_fragment(f)[0] for f in fragments],
+             test_smiles_list=[canonical_fragment(f)[0] for f in test_fragments],
              checkpoint=args.checkpoint, batch_size=args.batch_size,
              max_nodes=args.max_nodes, num_codes=args.num_codes,
              codebook_size=args.codebook_size, seed=args.seed, device=args.device,
@@ -138,12 +151,13 @@ if __name__ == '__main__':
     data2 = json.load(open('../stru_data_ZINC_250K_pamf_test.json'))
     subsmiles2 = [i for i, v in data2['pamf'].items()]
 
-    subsmiles1.extend(subsmiles2)
     train = list(set(subsmiles1))
+    test = list(set(subsmiles2))
 
-    train_vq(100, 8e-5,
+    train_vq(100, 5e-4,
              train,
-             checkpoint='autoencoder/fragment_vq.pth', batch_size=256,
+             test_smiles_list=test,
+             checkpoint='autoencoder/fragment_vq.pth', batch_size=1024,
              max_nodes=45, num_codes=5,
              codebook_size=64, seed=42, device=constant.device)
 

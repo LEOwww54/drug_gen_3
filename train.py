@@ -110,7 +110,7 @@ def train_fragGPT_ZINC_refined_prop_Riemmanian(epoch, s, s1):
 if __name__ == '__main__':
     ## md_test()
     # train_fragGPT_chembl_unconditional_lora_1(2, True, False)
-    train_fragGPT_ZINC_250K_pamf(5, False)
+    train_fragGPT_ZINC_250K_pamf(5, False, batch_size=50, lr=8e-5)
 
     # finetune_alot_ZINC_geom(epoch=8, s=True)
 

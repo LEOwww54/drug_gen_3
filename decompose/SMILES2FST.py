@@ -26,6 +26,9 @@ class VirtualAtomConnectionProcessor:
         Returns:
             dict: 包含处理结果的字典
         """
+        if mol is None:
+            raise ValueError("Cannot tokenize a null molecule")
+
         if mol_props is not None:
             map = {}
             count = 0
@@ -39,10 +42,6 @@ class VirtualAtomConnectionProcessor:
                         mol.GetAtomWithIdx(i).SetProp(pname, str(map[target]))
                     else:
                         mol.GetAtomWithIdx(i).SetProp(pname, str(pvalue))
-
-        if mol is None:
-            print("错误: 输入的分子对象为空")
-            return None
 
         self.original_mol = mol
 
@@ -86,6 +85,8 @@ class VirtualAtomConnectionProcessor:
 
             # 移除虚拟原子
             cleaned_mol = self.remove_virtual_atoms(mol_copy)
+            if cleaned_mol.GetNumAtoms() == 0:
+                raise ValueError("Fragment has no atoms after removing attachment atoms")
 
             # 为清理后的分子设置原子映射编号
             # 注意：_symmetry属性直接从原始分子复制，不重新计算
@@ -133,7 +134,7 @@ class VirtualAtomConnectionProcessor:
             print(f"分析连接时出错: {e}")
             import traceback
             traceback.print_exc()
-            return None, None, None
+            raise ValueError("Fragment connection analysis failed") from e
 
     def extract_virtual_atoms_from_mol(self, mol):
         """
@@ -217,27 +218,11 @@ class VirtualAtomConnectionProcessor:
             original_mol: 原始分子
             cleaned_mol: 清理后的分子
         """
-        # 使用子结构匹配找到映射
-        matches = original_mol.GetSubstructMatches(cleaned_mol)
-
-        if matches:
-            # 取第一个匹配
-            match = matches[0]
-            # 创建映射：原始索引 -> 清理后索引
-            self.atom_map = {orig_idx: clean_idx for clean_idx, orig_idx in enumerate(match)}
-        else:
-            # 如果子结构匹配失败，尝试直接映射（当分子结构简单时）
-            self.atom_map = {}
-            orig_idx = 0
-            clean_idx = 0
-            while orig_idx < original_mol.GetNumAtoms():
-                atom = original_mol.GetAtomWithIdx(orig_idx)
-                if atom.GetSymbol() == '*' and atom.GetIsotope() > 0:
-                    orig_idx += 1
-                    continue
-                self.atom_map[orig_idx] = clean_idx
-                orig_idx += 1
-                clean_idx += 1
+        # RemoveAtom preserves the relative order of all surviving atoms.
+        # Substructure matching can permute equivalent atoms and move attachment IDs.
+        survivors = [atom.GetIdx() for atom in original_mol.GetAtoms()
+                     if not (atom.GetSymbol() == '*' and atom.GetIsotope() > 0)]
+        self.atom_map = {original: cleaned for cleaned, original in enumerate(survivors)}
 
     def get_cleaned_atom_index(self, original_idx):
         """

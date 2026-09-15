@@ -435,7 +435,7 @@ def gen2mol(texts):
     return result
 
 if __name__ == '__main__':
-    s = '<start> { [C] <rad0> <fc0> <m- 1> <r> ( - [C] <rad0> <fc0> <r> = <r2> ) ( = [C] <rad0> <fc0> <r> - [C] <rad0> <fc0> <r> ( = [C] <rad0> <fc0> <r> - <r1> - [C] <rad0> <fc0> <r> = <r2> ) ( - [C] <rad0> <fc0> <m- 3> <r> = [C] <rad0> <fc0> <r> - [O] <rad0> <fc0> <r> - <r1> ) ) } { [C] <rad0> <fc0> <m- 4> <r> ( = [C] <rad0> <fc0> <r> - <r1> ) ( - [C] <rad0> <fc0> <m- 2> <r> = [C] <rad0> <fc0> <r> - [C] <rad0> <fc0> <r> = [C] <rad0> <fc0> <r> - <r1> ) } { [C] <rad0> <fc0> <m- 3> - [C] <rad0> <fc0> ( = [O] <rad0> <fc0> ) ( - [NH] <rad0> <fc0> <m- 4> ) } { [C] <rad0> <fc0> - [C] <rad0> <fc0> <m- 1> ( - [C] <rad0> <fc0> ) ( - [C] <rad0> <fc0> ) } { [F] <rad0> <fc0> <m- 2> } </s>'
+    s = '<start> { [C] <rad0> <fc0> - [C] <rad0> <fc0> <r> ( - [N] <rad0> <fc0> <r> = <r2> ) ( = [C] <rad0> <fc0> <r> ( - [C] <rad0> <fc0> <r> = [C] <rad0> <fc0> <r> - [N] <rad0> <fc0> <r> = <r2> ) ( - [C] <rad0> <fc0> ( = [O] <rad0> <fc0> ) ( - [NH] <rad0> <fc0> - [C] <rad0> <fc0> ( - [C] <rad0> <fc0> ) ( - [C] <rad0> <fc0> <r> ( = [C] <rad0> <fc0> <r> - <r1> ) ( - [S] <rad0> <fc0> <r> - [C] <rad0> <fc0> <r> ( = [C] <rad0> <fc0> <r> - <r1> ) ( - [Cl] <rad0> <fc0> ) ) ) ) ) ) } </s>'
     r = gen2mol([s])
     d = Chem.MolFromSmiles('CC(C)(C)c1ccc2occ(CC(=O)Nc3ccccc3F)c2c1')
     Chem.Kekulize(d, True)

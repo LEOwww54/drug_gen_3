@@ -5,22 +5,19 @@ from unittest.mock import patch
 
 import torch
 from torch.utils.data import default_collate
-from autoencoder.fragment_vq import FragmentDataset, FragmentVQAutoencoder, fragment_graph
+from autoencoder.fragment_vq import (FragmentDataset, FragmentVQAutoencoder,
+                                     collect_atom_vocabulary, fragment_graph)
 from autoencoder.train_vq import train_vq
 
 
 class FragmentVQTests(unittest.TestCase):
-    def test_batch_loss_logging(self):
+    def test_no_periodic_batch_loss_logging(self):
         from autoencoder.train_vq import run_epoch
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
         with patch('autoencoder.train_vq.tqdm.write') as write:
             losses, _ = run_epoch(self.model, [self.batch] * 101, 'cpu', optimizer,
                                   show_progress=False, desc='Epoch 1/1 train')
-        import json
-        self.assertEqual(write.call_count, 1)
-        logged = json.loads(write.call_args.args[0])
-        self.assertEqual(logged['batch'], 100)
-        self.assertIn('total', logged['current_loss'])
+        write.assert_not_called()
         self.assertTrue(torch.isfinite(torch.tensor(losses['total'])))
         with patch('autoencoder.train_vq.tqdm.write') as write:
             run_epoch(self.model, [self.batch] * 100, 'cpu', show_progress=False)
@@ -107,13 +104,27 @@ class FragmentVQTests(unittest.TestCase):
             with patch('autoencoder.train_vq.torch.optim.AdamW',
                        wraps=torch.optim.AdamW) as optimizer:
                 model = train_vq(1, 3e-4, smiles, checkpoint=path, batch_size=2,
-                                 max_nodes=4, num_codes=2, codebook_size=8, device='cpu')
+                                 max_nodes=4, num_codes=2, codebook_size=8, device='cpu',
+                                 test_smiles_list=['CCl'])
             self.assertEqual(optimizer.call_args.kwargs['lr'], 3e-4)
             self.assertFalse(model.training)
             self.assertTrue(path.is_file())
             self.assertEqual(model.encode_fragments(smiles),
                              FragmentVQAutoencoder.load(path).encode_fragments(smiles))
+            self.assertEqual(model.atom_vocabulary, [6, 7, 8, 17])
+            self.assertEqual(model.atom.num_embeddings, 7)
         self.assertEqual(smiles, ['CC', 'CO', 'CN', 'CC'])
+
+    def test_compact_vocabulary_collects_train_and_test_elements(self):
+        train, test = ['CC', 'CO'], ['CCl', 'C[SiH3]']
+        vocabulary = collect_atom_vocabulary(train + test)
+        self.assertEqual(vocabulary, [6, 8, 14, 17])
+        graph = fragment_graph('CCl', 4, vocabulary)
+        self.assertEqual(graph['atoms'][:2].tolist(), [3, 6])
+        self.assertEqual(fragment_graph('CP', 4, vocabulary)['atoms'][1].item(), 2)
+        dataset = FragmentDataset(train, 4, atom_vocabulary=vocabulary,
+                                  show_progress=False)
+        self.assertEqual(dataset[1]['atoms'][:2].tolist(), [3, 4])
 
     def test_training_arguments(self):
         for epochs, lr, smiles, error in [

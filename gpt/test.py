@@ -288,6 +288,9 @@ class GPT(nn.Module):
         super().__init__()
         self.conditional = list(conditional)
         self.prop_len = prop_len
+        self.register_buffer("property_mean", torch.zeros(prop_len))
+        self.register_buffer("property_std", torch.ones(prop_len))
+        self.register_buffer("property_stats_fitted", torch.tensor(False))
         self.decoder = Decoder(vocab_size, prop_len, p_type=p_type, conditional=self.conditional)
         self.projection = nn.Linear(d_model, vocab_size).to(device)
 
@@ -331,7 +334,12 @@ class GPT(nn.Module):
                 nn.init.zeros_(module.k_up.weight)
                 nn.init.zeros_(module.v_up.weight)
 
+    def normalize_properties(self, prop):
+        return (prop - self.property_mean) / self.property_std
+
     def forward(self, dec_inputs, protein, protein_length, pocket, prop):
+        if prop is not None:
+            prop = self.normalize_properties(prop)
         # Output signature is unchanged.
         dec_outputs, dec_self_attns = self.decoder(
             dec_inputs, protein, protein_length, pocket, prop
@@ -571,23 +579,74 @@ def _compute_loss(model, criterion, outputs, dec_outputs, dec_inputs, props):
     if props is None or model.property_head is None:
         return token_loss, None
 
-    pred_prop = model.predict_properties(outputs[3], dec_inputs)
-    prop_loss = F.mse_loss(pred_prop, props)
+    # Structure-only pass: target properties cannot be copied through conditioning.
+    hidden, _ = model.decoder(dec_inputs, None, None, None, None)
+    pred_prop = model.predict_properties(hidden, dec_inputs)
+    prop_loss = F.mse_loss(pred_prop, model.normalize_properties(props))
     total_loss = token_loss + model.property_loss_weight * prop_loss
     return total_loss, prop_loss
+
+
+def _fit_property_statistics(model, loaders):
+    """Fit only on training datasets, without padding or changing stored samples."""
+    if model.property_head is None or bool(model.property_stats_fitted):
+        return
+    count = 0
+    mean = torch.zeros(model.prop_len, dtype=torch.float64)
+    m2 = torch.zeros_like(mean)
+    for loader in loaders:
+        if loader is None:
+            continue
+        for sample in loader.dataset:
+            values = sample['props']
+            if values is None:
+                raise ValueError('Property-conditioned training requires properties for every sample')
+            values = torch.as_tensor(values, dtype=torch.float64)
+            if values.shape != mean.shape or not torch.isfinite(values).all():
+                raise ValueError('Invalid training properties')
+            count += 1
+            delta = values - mean
+            mean += delta / count
+            m2 += delta * (values - mean)
+    if not count:
+        raise ValueError('No training properties available')
+    std = (m2 / count).clamp_min(0).sqrt()
+    std = torch.where(std < 1e-6, torch.ones_like(std), std)
+    model.property_mean.copy_(mean)
+    model.property_std.copy_(std)
+    model.property_stats_fitted.fill_(True)
+
+
+class _LossTotals:
+    def __init__(self, weight):
+        self.weight = weight
+        self.token_sum = self.prop_sum = 0.0
+        self.tokens = self.elements = 0
+
+    def add(self, loss, prop_loss, targets, props):
+        prop_value = 0.0 if prop_loss is None else prop_loss.item()
+        token_value = loss.item() - self.weight * prop_value
+        count = targets.ne(constant.PAD_TOKEN_ID).sum().item()
+        self.token_sum += token_value * count
+        self.tokens += count
+        if prop_loss is not None:
+            self.prop_sum += prop_value * props.numel()
+            self.elements += props.numel()
+
+    def result(self):
+        token = self.token_sum / max(self.tokens, 1)
+        prop = self.prop_sum / max(self.elements, 1)
+        return dict(loss=token + self.weight * prop, token_loss=token, prop_loss=prop)
 
 
 def train_step(model, data_loader, optimizer, criterion, clip=1, print_every=None, vs=0, conditional=("unconditional",)):
     if data_loader is None:
         return -1
-    if print_every == 0:
-        print_every = 1
-
     model.train()
-    print_loss_total = 0.0
-    epoch_loss = 0.0
+    totals = _LossTotals(model.property_loss_weight)
 
-    for i, (dec_inputs, dec_outputs, protein, protein_len, pocket, props) in enumerate(tqdm(data_loader)):
+    progress = tqdm(data_loader, desc="Train")
+    for i, (dec_inputs, dec_outputs, protein, protein_len, pocket, props) in enumerate(progress):
         optimizer.zero_grad(set_to_none=True)
         dec_inputs = torch.as_tensor(dec_inputs, dtype=torch.long, device=device)
         dec_outputs = torch.as_tensor(dec_outputs, dtype=torch.long, device=device)
@@ -602,18 +661,15 @@ def train_step(model, data_loader, optimizer, criterion, clip=1, print_every=Non
         torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
         optimizer.step()
 
-        print_loss_total += loss.item()
-        epoch_loss += loss.item()
+        totals.add(loss, prop_loss, dec_outputs, props)
+        aggregate = totals.result()
+        metrics = {"loss": f"{loss.item():.4f}", "avg_loss": f"{aggregate['loss']:.4f}",
+                   "token_loss": f"{aggregate['token_loss']:.4f}"}
+        if prop_loss is not None:
+            metrics["prop_loss"] = f"{aggregate['prop_loss']:.4f}"
+        progress.set_postfix(metrics)
 
-        if print_every and (i + 1) % print_every == 0:
-            print_loss_avg = print_loss_total / print_every
-            print_loss_total = 0.0
-            if prop_loss is None:
-                print("\tCurrent Loss: %.4f" % print_loss_avg)
-            else:
-                print("\tCurrent Loss: %.4f | Prop Loss: %.4f" % (print_loss_avg, prop_loss.item()))
-
-    return epoch_loss / max(len(data_loader), 1)
+    return totals.result()['loss']
 
 
 def epoch_time(start_time, end_time):
@@ -623,12 +679,11 @@ def epoch_time(start_time, end_time):
     return elapsed_mins, elapsed_secs
 
 
-def _evaluate(model, data_iterable, criterion, conditional):
+def _evaluate(model, data_iterable, criterion, conditional, return_metrics=False):
     if data_iterable is None:
         return None
     model.eval()
-    total_loss = 0.0
-    total_batches = 0
+    totals = _LossTotals(model.property_loss_weight)
     with torch.no_grad():
         for datas in data_iterable:
             if datas is None:
@@ -640,12 +695,12 @@ def _evaluate(model, data_iterable, criterion, conditional):
                     protein, protein_len, pocket, props, conditional
                 )
                 model_outputs = model(dec_inputs, protein, protein_len, pocket, props)
-                loss, _ = _compute_loss(model, criterion, model_outputs, dec_outputs, dec_inputs, props)
-                total_loss += loss.item()
-                total_batches += 1
-    if total_batches == 0:
+                loss, prop_loss = _compute_loss(model, criterion, model_outputs, dec_outputs, dec_inputs, props)
+                totals.add(loss, prop_loss, dec_outputs, props)
+    if not totals.tokens:
         return None
-    return total_loss / total_batches
+    result = totals.result()
+    return result if return_metrics else result["loss"]
 
 
 def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unconditional",), save_name="GPT.pt",
@@ -674,11 +729,13 @@ def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unco
 
     from datetime import datetime
 
+    model.to(device)
+    _fit_property_statistics(model, data_loader[0])
     criterion = nn.CrossEntropyLoss(ignore_index=constant.PAD_TOKEN_ID).to(device)
     optimizer = optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=lr)
     X, Y = [], []
     last_loss = math.inf
-    model.to(device)
+    saved_best = False
 
     for train_data in data_loader[0]:
         for epoch in range(epochs):
@@ -690,19 +747,19 @@ def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unco
                 optimizer,
                 criterion,
                 CLIP,
-                print_every=100,
                 conditional=conditional,
             )
             Y.append(train_loss)
             end_time = time.time()
 
-            if last_loss > train_loss:
+            valid_metrics = _evaluate(model, data_loader[1], criterion, conditional, return_metrics=True)
+            selection_loss = train_loss if valid_metrics is None else valid_metrics['token_loss']
+            if math.isfinite(selection_loss) and selection_loss < last_loss:
                 torch.save(model.state_dict(), output_dir / save_name)
-                last_loss = train_loss
-
-            valid_loss = _evaluate(model, data_loader[1], criterion, conditional)
-            if valid_loss is not None:
-                print(f"valid loss:{valid_loss}")
+                last_loss = selection_loss
+                saved_best = True
+            if valid_metrics is not None:
+                print(f"valid metrics:{valid_metrics}")
 
             epoch_mins, epoch_secs = epoch_time(start_time, end_time)
             print(f"Epoch: {epoch + 1:02} | Time: {epoch_mins}m {epoch_secs}s")
@@ -712,7 +769,10 @@ def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unco
     np.save(output_dir / (now + "_X.npy"), X)
     np.save(output_dir / (now + "_Y.npy"), Y)
 
-    test_loss = _evaluate(model, data_loader[2], criterion, conditional)
+    if not saved_best:
+        raise RuntimeError("Training did not produce a finite best checkpoint")
+    model.load_state_dict(torch.load(output_dir / save_name, map_location=device, weights_only=True))
+    test_loss = _evaluate(model, data_loader[2], criterion, conditional, return_metrics=True)
     if test_loss is not None:
         print(f"test loss:{test_loss}")
 

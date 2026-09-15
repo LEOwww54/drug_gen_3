@@ -8,10 +8,15 @@ def tree(mol : Chem.Mol):
     edge = {}
     ring_pairs = {}
 
+    if mol.GetNumAtoms() == 0:
+        return edge, ring_pairs
     queue.append(0)
     while True:
         if len(queue) <= 0:
-            break
+            remaining = next((i for i in range(mol.GetNumAtoms()) if i not in visited), None)
+            if remaining is None:
+                break
+            queue.append(remaining)
 
         atomid = queue.pop()
         atom = mol.GetAtomWithIdx(atomid)
@@ -59,41 +64,27 @@ def tree(mol : Chem.Mol):
     return  edge, ring_pairs
 
 def getR(connections : dict[int, dict[int, tuple]], idx : int, text : dict[int, list], ring_pairs : dict[int, set]):
-    s = text[idx]
-    if idx in connections:
-        l = len(connections[idx])
-    else:
-        l = 0
-
-    count = 0
+    # Ring closures are emitted on their endpoints, never as child branches.
+    # Copy the payload: serialization must not modify the caller's atom tokens.
+    s = list(text[idx])
+    children = [(i, content) for i, content in connections.get(idx, {}).items()
+                if content[2] == 0 and content[3] is not None]
 
     if idx in ring_pairs:
-        for i in ring_pairs[idx]:
+        for i in sorted(ring_pairs[idx], key=lambda pair: pair[0]):
             bond = bond_type_to_str(i[1])
             if i[0] < 10:
-                s.append(f'{bond} <r{i[0]}>')
+                s.extend([bond, f'<r{i[0]}>'])
             else:
-                s.append(f'{bond} <r%{i[0]}>')
+                s.extend([bond, f'<r%{i[0]}>'])
 
-    if idx in connections:
-        for i, content in connections[idx].items():
-            bond = content[3]
-            ring_count = content[2]
-            st = []
-
-            if bond is not None:
-                if (l > 1):
-                    st.append('(')
-                if ring_count > 0:
-                    pass
-                else:
-                    st += bond_type_to_str(bond)
-                    st += getR(connections, i, text, ring_pairs)
-                if (l > 1):
-                    st .append(')')
-
-                s.extend(st)
-            count += 1
+    for i, content in children:
+        if len(children) > 1:
+            s.append('(')
+        s.append(bond_type_to_str(content[3]))
+        s.extend(getR(connections, i, text, ring_pairs))
+        if len(children) > 1:
+            s.append(')')
 
     return s
 
@@ -121,10 +112,15 @@ def smiles_test(smiles = 'C1CCC2C[1*]CC12'):
     return getR(connections, 0, text, ring_pairs)
 
 def smiles2token(mol, text):
+    mol = Chem.Mol(mol)
     Chem.Kekulize(mol, True)
     connections, ring_pairs = tree(mol)
-
-    return getR(connections, 0, text, ring_pairs)
+    tokens = []
+    for component in Chem.GetMolFrags(mol):
+        if tokens:
+            tokens.append('.')
+        tokens.extend(getR(connections, component[0], text, ring_pairs))
+    return tokens
 
 if __name__ == '__main__':
     e = smiles_test('C=1=C=C=C=C=1')
