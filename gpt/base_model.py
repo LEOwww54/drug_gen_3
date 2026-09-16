@@ -20,6 +20,9 @@ class ScaledDotProductAttention(nn.Module):
             scores = scores.masked_fill(attn_mask.bool(), torch.finfo(scores.dtype).min)
 
         attn = torch.softmax(scores, dim=-1)
+        if attn_mask is not None:
+            # Fully masked rows must contribute zero, including in low precision.
+            attn = attn.masked_fill(attn_mask.bool(), 0.0)
         attn = self.dropout(attn)
         context = torch.matmul(attn, V)
         return context, attn
@@ -83,6 +86,8 @@ class PropertyAdaptiveScaledDotProductAttention(nn.Module):
         self.d_k = d_k
         self.n_heads = n_heads
         self.alpha = float(alpha)
+        if not 0.0 <= self.alpha < 1.0:
+            raise ValueError("alpha must satisfy 0 <= alpha < 1")
         prop_context_dim = prop_context_dim or getattr(constant, "d_model", d_k * n_heads)
 
         hidden = max(64, min(prop_context_dim, 256))
@@ -113,6 +118,9 @@ class PropertyAdaptiveScaledDotProductAttention(nn.Module):
             scores = scores.masked_fill(attn_mask.bool(), torch.finfo(scores.dtype).min)
 
         attn = torch.softmax(scores, dim=-1)
+        if attn_mask is not None:
+            # Fully masked rows must contribute zero, including in low precision.
+            attn = attn.masked_fill(attn_mask.bool(), 0.0)
         attn = self.dropout(attn)
         context = torch.matmul(attn, V)
         return context, attn, metric_diag
@@ -358,4 +366,6 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x):
         # Input convention is [B, L, D].  Keep original behavior: return only PE.
+        if x.size(1) > self.pe.size(1):
+            raise ValueError(f"Sequence length {x.size(1)} exceeds positional capacity {self.pe.size(1)}")
         return self.pe[:, : x.size(1)].to(dtype=x.dtype, device=x.device)

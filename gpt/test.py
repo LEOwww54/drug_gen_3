@@ -361,115 +361,78 @@ class GPT(nn.Module):
         pooled = (hidden_states * valid).sum(dim=1) / denom
         return self.property_head(pooled)
 
-    @staticmethod
-    def _filter_finished(input_ids, next_token, protein, protein_length, pocket, prop, result):
-        finished = next_token.squeeze(-1).eq(constant.EOS_TOKEN_ID)
-        if finished.any():
-            finished_idx = finished.nonzero(as_tuple=False).squeeze(-1)
-            for idx in finished_idx.tolist():
-                result.append(input_ids[idx].detach().cpu().tolist())
+    def _generate(self, input_ids, protein, protein_length, pocket, prop,
+                  method, arg, max_length):
+        """Generate up to a total length, preserving the original batch order."""
+        if input_ids.ndim != 2 or input_ids.size(1) == 0:
+            raise ValueError("input_ids must be a nonempty [batch, length] tensor")
+        capacity = self.decoder.pos_emb.pe.size(1)
+        if input_ids.size(1) > capacity:
+            raise ValueError("Prompt exceeds positional encoding capacity")
+        if isinstance(max_length, bool) or int(max_length) != max_length or max_length < 1:
+            raise ValueError("max_length must be a positive integer")
+        limit = min(int(max_length), capacity)
+        if method == "temperature" and (not math.isfinite(float(arg)) or float(arg) <= 0):
+            raise ValueError("temperature must be finite and positive")
+        if method == "top_k" and (isinstance(arg, bool) or int(arg) != arg or int(arg) < 1):
+            raise ValueError("k must be a positive integer")
+        result = [None] * input_ids.size(0)
+        indices = torch.arange(input_ids.size(0), device=input_ids.device)
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.no_grad():
+                # An already terminated prompt must not receive extra tokens.
+                active = ~input_ids[:, -1].eq(constant.EOS_TOKEN_ID)
+                for idx in (~active).nonzero(as_tuple=True)[0].tolist():
+                    result[idx] = input_ids[idx].cpu().tolist()
+                conditions = [protein, protein_length, pocket, prop]
+                conditions = [v[active] if v is not None else None for v in conditions]
+                input_ids, indices = input_ids[active], indices[active]
+                for _ in range(max(0, limit - input_ids.size(1))):
+                    if not input_ids.size(0):
+                        break
+                    logits = self(input_ids, *conditions)[2][:, -1, :]
+                    if method == "greedy":
+                        token = logits.argmax(dim=-1, keepdim=True)
+                    elif method == "temperature":
+                        token = torch.multinomial(F.softmax(logits / float(arg), dim=-1), 1)
+                    else:
+                        values, choices = logits.topk(min(int(arg), logits.size(-1)), dim=-1)
+                        token = choices.gather(-1, torch.multinomial(F.softmax(values, dim=-1), 1))
+                    input_ids = torch.cat([input_ids, token], dim=-1)
+                    finished = token[:, 0].eq(constant.EOS_TOKEN_ID)
+                    for idx in finished.nonzero(as_tuple=True)[0].tolist():
+                        result[indices[idx].item()] = input_ids[idx].cpu().tolist()
+                    keep = ~finished
+                    input_ids, indices = input_ids[keep], indices[keep]
+                    conditions = [v[keep] if v is not None else None for v in conditions]
+                for idx, row in zip(indices.tolist(), input_ids):
+                    result[idx] = row.cpu().tolist()
+        finally:
+            self.train(was_training)
+        return result
 
-        keep = ~finished
-        if keep.any():
-            input_ids = input_ids[keep]
-            if prop is not None:
-                prop = prop[keep]
-            if protein is not None:
-                protein = protein[keep]
-            if protein_length is not None:
-                protein_length = protein_length[keep]
-            if pocket is not None:
-                pocket = pocket[keep]
-            return input_ids, protein, protein_length, pocket, prop, False
+    def temperature_sampling(model, tokenizer, input_ids, protein, protein_length,
+                             pocket, prop, temperature=0.8, max_length=constant.max_pos):
+        return [tokenizer.decode(row) for row in model._generate(
+            input_ids, protein, protein_length, pocket, prop,
+            "temperature", temperature, max_length)]
 
-        return input_ids[:0], protein, protein_length, pocket, prop, True
-
-    def temperature_sampling(
-        model,
-        tokenizer,
-        input_ids,
-        protein,
-        protein_length,
-        pocket,
-        prop,
-        temperature=0.8,
-        max_length=constant.max_pos,
-    ):
-        model.eval()
-        with torch.no_grad():
-            result = []
-            for _ in range(max_length):
-                if input_ids.size(0) == 0:
-                    break
-                outputs = model(input_ids, protein, protein_length, pocket, prop)
-                next_token_logits = outputs[2][:, -1, :] / max(float(temperature), 1e-6)
-                probs = F.softmax(next_token_logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                input_ids = torch.cat([input_ids, next_token], dim=-1)
-
-                input_ids, protein, protein_length, pocket, prop, all_done = model._filter_finished(
-                    input_ids, next_token, protein, protein_length, pocket, prop, result
-                )
-                if all_done:
-                    break
-
-            # Preserve unfinished samples rather than silently dropping them.
-            for row in input_ids:
-                result.append(row.detach().cpu().tolist())
-            return [tokenizer.decode(i) for i in result]
-
-    def top_k_sampling(
-        model,
-        tokenizer,
-        input_ids,
-        protein,
-        protein_length,
-        prop,
-        k=40,
-        max_length=constant.max_pos,
-        pocket=None,
-    ):
-        model.eval()
-        with torch.no_grad():
-            result = []
-            for _ in range(max_length):
-                if input_ids.size(0) == 0:
-                    break
-                outputs = model(input_ids, protein, protein_length, pocket, prop)
-                next_token_logits = outputs[2][:, -1, :]
-                k_eff = min(int(k), next_token_logits.size(-1))
-                top_k_logits, top_k_indices = torch.topk(next_token_logits, k_eff, dim=-1)
-                probs = F.softmax(top_k_logits, dim=-1)
-                next_token_index = torch.multinomial(probs, num_samples=1)
-                next_token = top_k_indices.gather(-1, next_token_index)
-                input_ids = torch.cat([input_ids, next_token], dim=-1)
-
-                input_ids, protein, protein_length, pocket, prop, all_done = model._filter_finished(
-                    input_ids, next_token, protein, protein_length, pocket, prop, result
-                )
-                if all_done:
-                    break
-
-            for row in input_ids:
-                result.append(row.detach().cpu().tolist())
-            return [tokenizer.decode(i) for i in result]
+    def top_k_sampling(model, tokenizer, input_ids, protein, protein_length,
+                       prop, k=40, max_length=constant.max_pos, pocket=None):
+        return [tokenizer.decode(row) for row in model._generate(
+            input_ids, protein, protein_length, pocket, prop, "top_k", k, max_length)]
 
     def greedy_decoder(self, dec_input, protein, protein_length, pocket=None, prop=None):
-        terminal = False
-        start_dec_len = dec_input.size(1)
-        while not terminal:
-            if dec_input.size(1) - start_dec_len > 100:
-                next_symbol = torch.tensor(
-                    [[constant.EOS_TOKEN_ID]], dtype=dec_input.dtype, device=dec_input.device
-                )
-                dec_input = torch.cat([dec_input.detach(), next_symbol], dim=-1)
-                break
-
-            outputs = self(dec_input, protein, protein_length, pocket, prop)
-            next_symbol = outputs[2][:, -1, :].argmax(dim=-1, keepdim=True)
-            terminal = bool(next_symbol.eq(constant.EOS_TOKEN_ID).all())
-            dec_input = torch.cat([dec_input.detach(), next_symbol], dim=-1)
-        return dec_input
+        rows = self._generate(dec_input, protein, protein_length, pocket, prop,
+                              "greedy", None, min(dec_input.size(1) + 101,
+                                                  self.decoder.pos_emb.pe.size(1)))
+        tensors = [torch.tensor(row, dtype=dec_input.dtype, device=dec_input.device) for row in rows]
+        if not tensors:
+            return dec_input
+        return nn.utils.rnn.pad_sequence(tensors, batch_first=True,
+                                         padding_value=constant.PAD_TOKEN_ID)
 
     def answer(
         self,
@@ -481,7 +444,7 @@ class GPT(nn.Module):
         batch=1,
         model="t12_35M",
         pocket=None,
-        arg=0.8,
+        arg=None,
     ):
         dec_input = tokenizer.encode(sentence).ids
         dec_input = torch.tensor(dec_input, dtype=torch.long, device=device).repeat(batch, 1)
@@ -540,11 +503,12 @@ class GPT(nn.Module):
                 protein=protein,
                 protein_length=protein_length,
                 prop=prop,
-                temperature=arg,
+                temperature=0.8 if arg is None else arg,
                 pocket=pocket,
             )
         elif method == "top_k":
             return self.top_k_sampling(
+                k=40 if arg is None else arg,
                 input_ids=dec_input,
                 tokenizer=tokenizer,
                 protein=protein,
@@ -576,7 +540,7 @@ def _prepare_batch_conditionals(protein, protein_len, pocket, props, conditional
 
 def _compute_loss(model, criterion, outputs, dec_outputs, dec_inputs, props):
     token_loss = criterion(outputs[0], dec_outputs.view(-1))
-    if props is None or model.property_head is None:
+    if props is None or model.property_head is None or model.property_loss_weight == 0:
         return token_loss, None
 
     # Structure-only pass: target properties cannot be copied through conditioning.
@@ -703,6 +667,49 @@ def _evaluate(model, data_iterable, criterion, conditional, return_metrics=False
     return result if return_metrics else result["loss"]
 
 
+def evaluate_property_condition_usage(model, data_iterable, conditional=("prop",)):
+    """Compare matched vs cyclically shuffled properties; positive delta indicates use.
+
+    This diagnostic measures teacher-forced sensitivity, not generated-molecule accuracy.
+    Singleton batches are excluded because they cannot be shuffled.
+    """
+    if "prop" not in conditional:
+        raise ValueError("Property conditioning is required")
+    was_training = model.training
+    model.eval()
+    matched = shuffled = 0.0
+    tokens = 0
+    try:
+        with torch.no_grad():
+            for loader in data_iterable:
+                if loader is None:
+                    continue
+                for inputs, targets, protein, lengths, pocket, props in loader:
+                    inputs = torch.as_tensor(inputs, dtype=torch.long, device=device)
+                    targets = torch.as_tensor(targets, dtype=torch.long, device=device)
+                    if inputs.size(0) < 2:
+                        continue
+                    protein, lengths, pocket, props = _prepare_batch_conditionals(
+                        protein, lengths, pocket, props, conditional)
+                    if props is None:
+                        raise ValueError("Properties are missing")
+                    for is_shuffled, values in [(False, props), (True, props.roll(1, 0))]:
+                        logits = model(inputs, protein, lengths, pocket, values)[0]
+                        loss = F.cross_entropy(logits, targets.reshape(-1),
+                                               ignore_index=constant.PAD_TOKEN_ID, reduction="sum").item()
+                        if is_shuffled:
+                            shuffled += loss
+                        else:
+                            matched += loss
+                    tokens += targets.ne(constant.PAD_TOKEN_ID).sum().item()
+    finally:
+        model.train(was_training)
+    if not tokens:
+        raise ValueError("No usable multi-sample batches")
+    return dict(matched_token_loss=matched / tokens, shuffled_token_loss=shuffled / tokens,
+                property_shuffle_delta=(shuffled - matched) / tokens)
+
+
 def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unconditional",), save_name="GPT.pt",
           output_dir=None):
     from pathlib import Path
@@ -753,7 +760,7 @@ def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unco
             end_time = time.time()
 
             valid_metrics = _evaluate(model, data_loader[1], criterion, conditional, return_metrics=True)
-            selection_loss = train_loss if valid_metrics is None else valid_metrics['token_loss']
+            selection_loss = train_loss if valid_metrics is None else valid_metrics['loss']
             if math.isfinite(selection_loss) and selection_loss < last_loss:
                 torch.save(model.state_dict(), output_dir / save_name)
                 last_loss = selection_loss
