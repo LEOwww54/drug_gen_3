@@ -330,17 +330,24 @@ class VirtualAtomConnectionProcessor:
         for atom in mol.GetAtoms():
             token = []
 
-            # A complete SMILES bracket atom: isotope, element, H count, charge.
-            # Explicit H counts preserve valence/radicals without separate rad tokens.
-            isotope = str(atom.GetIsotope()) if atom.GetIsotope() else ''
-            symbol = atom.GetSymbol()
-            total_h = atom.GetTotalNumHs()
-            hydrogen = 'H' if total_h == 1 else (f'H{total_h}' if total_h else '')
+            # 构建原子符号
+            if atom.GetAtomicNum() in [6, 8]:  # C或O
+                symbol = f'[{atom.GetSymbol()}]'
+            else:
+                total_h = atom.GetTotalNumHs()
+                if total_h > 1:
+                    symbol = f'[{atom.GetSymbol()}H{total_h}]'
+                elif total_h == 1:
+                    symbol = f'[{atom.GetSymbol()}H]'
+                else:
+                    symbol = f'[{atom.GetSymbol()}]'
+
+            # 形式电荷
             fc = atom.GetFormalCharge()
-            charge = ('+' if fc > 0 else '-') if fc else ''
-            if abs(fc) > 1:
-                charge += str(abs(fc))
-            symbol = f'[{isotope}{symbol}{hydrogen}{charge}]'
+            if fc == 0:
+                formal_charge = f"<fc{str(atom.GetFormalCharge())}>"
+            else:
+                formal_charge = f"<fc{str(atom.GetFormalCharge())}>"
 
             # 原子映射编号
             atom_index = atom.GetAtomMapNum()
@@ -351,6 +358,13 @@ class VirtualAtomConnectionProcessor:
             # 对称性（直接从属性读取）
             atom_sym = f"<sym{symmetry_map.get(atom.GetIdx(), 0)}>"
 
+            # 自由基电子数
+            rad = atom.GetNumRadicalElectrons()
+            if rad > 0:
+                atom_radical = f'<rad{rad}>'
+            else:
+                atom_radical = f'<rad{rad}>'
+
             # 连接信息
             conn_info = []
             for connection in connections:
@@ -358,14 +372,19 @@ class VirtualAtomConnectionProcessor:
                     conn_info.append(f"<m{connection['bond_symbol']}")
                     conn_info.append(f"{connection['connection_number']}>")
 
-            token.append('^')
             token.append(symbol)
+            if atom_radical is not None:
+                token.append(atom_radical)
+
+            if formal_charge is not None:
+                token.append(formal_charge)
+
             token.extend(conn_info)
 
             # token.append(atom_sym)
 
-            #if atom.IsInRing():
-            #    token.append('<r>')
+            if atom.IsInRing():
+                token.append('<r>')
 
             text[atom.GetIdx()] = token
 

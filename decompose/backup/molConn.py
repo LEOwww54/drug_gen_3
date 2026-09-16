@@ -23,9 +23,11 @@ def auto_connect_fragments_by_dummy_atoms(smiles_list, default_bond_type='-'):
 
     for i, smiles in enumerate(smiles_list):
         mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            raise ValueError(f"无法解析SMILES: {smiles}")
         mol = Chem.AddHs(mol)
+        if mol is None:
+            mol = Chem.MolFromSmarts(smiles)
+            if mol is None:
+                raise ValueError(f"无法解析SMILES: {smiles}")
         mols.append(mol)
 
         # 提取虚拟原子信息
@@ -53,8 +55,9 @@ def auto_connect_fragments_by_dummy_atoms(smiles_list, default_bond_type='-'):
 
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 0:  # 不是虚拟原子
-                # Preserve isotope, explicit-H policy, charge and radical state.
-                new_atom = Chem.Atom(atom)
+                new_atom = Chem.Atom(atom.GetAtomicNum())
+                new_atom.SetFormalCharge(atom.GetFormalCharge())
+                new_atom.SetIsAromatic(atom.GetIsAromatic())
                 new_idx = combined_mol.AddAtom(new_atom)
                 fragment_atom_map[atom.GetIdx()] = new_idx
 
@@ -234,124 +237,187 @@ ORGANIC_ELEMENTS_2 = [
         'Br',
     ]
 
-def _smiles_atom(token, *, legacy=False, charge=None, radical=0, aromatic=False):
-    """Preserve SMILES bracket atoms; adapt only explicitly marked legacy SISR."""
-    if not (token.startswith('[') and token.endswith(']')):
-        raise ValueError(f'Invalid atom token: {token!r}')
-    atom = Chem.AtomFromSmiles(token)
-    if atom is None:
-        raise ValueError(f'Invalid SMILES atom token: {token!r}')
-    body = token[1:-1]
-    if aromatic:
-        body = re.sub(r'^(\d*)([A-Z][a-z]?)',
-                      lambda m: m[1] + m[2].lower(), body)
-    if charge is not None:
-        if atom.GetFormalCharge() and atom.GetFormalCharge() != charge:
-            raise ValueError(f'Conflicting charges for {token!r}')
-        # Charge precedes an optional atom map; SMILES uses +2/-2, not 2+/-2-.
-        body, separator, mapping = body.partition(':')
-        body = re.sub(r'(?:\+{2,}|-{2,}|[+-]\d*)$', '', body)
-        if charge:
-            body += '+' if charge > 0 else '-'
-            if abs(charge) > 1:
-                body += str(abs(charge))
-        if separator:
-            body += ':' + mapping
-    if legacy and not radical and not (charge or atom.GetFormalCharge()):
-        # Old [C]/[O] etc. represented atoms with inferred hydrogen counts.
-        # Keep explicit H, isotope, chirality and maps inside their brackets.
-        if body in {'B', 'C', 'N', 'O', 'P', 'S', 'F', 'Cl', 'Br', 'I',
-                    'b', 'c', 'n', 'o', 'p', 's'}:
-            return body
-    result = '[' + body + ']'
-    if Chem.AtomFromSmiles(result) is None:
-        raise ValueError(f'Invalid SMILES atom token: {result!r}')
-    return result
-
-
-def _translate_fragment(tokens):
-    legacy = any(t.startswith(('<fc', '<rad')) or t == '^atom^' for t in tokens)
-    output, links, suffix = [], [], []
-    atom_token = None
-    charge, radical, aromatic = None, 0, False
-    pending_bond = None
-
-    def flush_atom():
-        if pending_bond is not None:
-            raise ValueError('Attachment bond is missing its connection number')
-        if atom_token is not None:
-            output.append(_smiles_atom(atom_token, legacy=legacy, charge=charge,
-                                       radical=radical, aromatic=aromatic))
-            output.extend(links)
-            output.extend(suffix)
-
-    for token in tokens:
-        if token.startswith('['):
-            flush_atom()
-            atom_token = token
-            links, suffix = [], []
-            charge, radical, aromatic = None, 0, False
-            continue
-        if token == '^atom^' or token == '^':
-            continue
-        if atom_token is None:
-            raise ValueError(f'Expected an atom before {token!r}')
-        if pending_bond is not None:
-            if not re.fullmatch(r'[1-9]\d*>', token):
-                raise ValueError(f'Invalid attachment number: {token!r}')
-            links.append(f'({pending_bond}[{token[:-1]}*])')
-            pending_bond = None
-        elif re.fullmatch(r'<m[-=#:~]', token):
-            pending_bond = token[2:]
-        elif re.fullmatch(r'<fc[+-]?\d+>', token):
-            charge = int(token[3:-1])
-        elif re.fullmatch(r'<rad\d+>', token):
-            radical = int(token[4:-1])
-        elif token == '<A>':
-            aromatic = True
-        elif token == '<r>' or re.fullmatch(r'<sym-?\d+>', token):
-            continue
-        elif re.fullmatch(r'<r%?\d+>', token):
-            number = int(token[2:-1].lstrip('%'))
-            suffix.append(str(number) if number < 10 else
-                          (f'%{number}' if number < 100 else f'%({number})'))
-        elif token in {'-', '=', '#', ':', '~', '/', '\\', '(', ')', '.'}:
-            suffix.append(token)
-        else:
-            raise ValueError(f'Unsupported SISR token: {token!r}')
-    flush_atom()
-    smiles = ''.join(output)
-    if not smiles or Chem.MolFromSmiles(smiles) is None:
-        raise ValueError(f'Fragment is not valid SMILES: {smiles!r}')
-    return smiles
-
-
 def mol_translate(text):
-    """Decode SISR fragments, preserving explicit H and embedded SMILES charges.
-
-    Legacy fc/rad metadata is accepted for existing datasets. New bracket atom
-    tokens are used literally, including isotope, chirality, H count and charge.
-    """
+    text = text.replace('\t', ' ')
     if '<sep>' in text:
-        text = text.split('<sep>', 1)[1]
-    results = []
-    fragment = None
-    for token in text.split():
-        if token == '{':
-            if fragment is not None:
-                raise ValueError('Nested fragment boundary')
-            fragment = []
-        elif token == '}':
-            if fragment is None:
-                raise ValueError('Unmatched fragment boundary')
-            results.append(_translate_fragment(fragment))
-            fragment = None
-        elif fragment is not None:
-            fragment.append(token)
-    if fragment is not None:
-        raise ValueError('Unclosed fragment boundary')
-    return results
+        text = text.split('<sep>')
+        text = text[1]
+    text = text.strip()
 
+    text = text.split(' ')
+    try:
+        text.remove("<start>")
+        text.remove("</s>")
+    except:
+        pass
+    results = []
+
+    frags = []
+    frag = []
+
+    for token in text:
+        if token == '{':
+            frag = []
+            continue
+        if token == '}':
+            frag.append('[]')
+            frags.append(frag)
+            continue
+
+        frag.append(token)
+
+    atoms = ''
+    for frag in frags:
+        first_check = True
+        atoms = ''
+        atom = ''
+        symbol = ''
+        aromatic = False
+        rings = []
+
+        link_bond = ''
+        link_index = ''
+        links = []
+        b = False
+
+        fc = 0
+
+        functional_token = ''
+
+        ring_counter = 1
+
+        rad_num = 0
+
+        on_ring = False
+        special_symbol = ""
+
+        for token in frag:
+            if token[0] == '[' and not first_check:
+                if aromatic:
+                    if len(symbol) > 1:
+                        symbol = symbol[0].lower() + symbol[1:]
+                    else:
+                        symbol = symbol.lower()
+                aromatic = False
+
+                if on_ring and len(special_symbol) == 1:
+                    b = True
+                if not on_ring and len(special_symbol) == 1:
+                    b = False
+                    symbol = special_symbol
+                if rad_num > 0:
+                    b = True
+                if not fc == 0:
+                    b = True
+                if b:
+                    if not fc == 0:
+                        if fc > 0 :
+                            if fc > 1:
+                                symbol += f'{fc}+'
+                            else:
+                                symbol += f'+'
+                        else:
+                            if fc < -1:
+                                symbol += f'{fc}-'
+                            else:
+                                symbol += f'-'
+                        fc = 0
+                    symbol = f"[{symbol}]"
+                b = False
+                on_ring = False
+                special_symbol = ""
+
+                for link in links:
+                    symbol += link
+                links = []
+
+                symbol += functional_token
+                functional_token = ''
+
+                for ring in rings:
+                    symbol += ring
+                rings = []
+
+                atom = symbol
+                atoms = atoms + atom
+
+            else:
+                first_check = False
+            if token[0] == '[':
+                if len(token) <= 2:
+                    continue
+                ts = token[1:-1]
+
+                if len(ts) == 1:
+                    symbol = ts.upper()
+                    b = False
+                    continue
+
+                if len(ts) >= 2:
+                    ts = ts[0].upper() + ts[1:]
+
+                    if ts[-1].upper() == 'H':
+                        symbol = ts[:-1]
+                        if len(symbol) > 1 and not symbol in ORGANIC_ELEMENTS_2:
+                            b = True
+                            continue
+                        b = False
+                        continue
+                    if ts[-1].isdigit() and ts[-2] == 'H':
+                        symbol = ts[:-2]
+                        if len(symbol) > 1 and not symbol in ORGANIC_ELEMENTS_2:
+                            b = True
+                            continue
+                        b = False
+                        continue
+                    if ts[-1] == '+' or ts[-1] == '-':
+                        b = True
+                        continue
+
+                    symbol = ts
+                    if not symbol in ORGANIC_ELEMENTS_2:
+                        b = True
+                        continue
+
+                symbol = ts
+                continue
+
+            if token[0] == '<':
+                if token[1] == 'm':
+                    link_bond = token[2]
+                    continue
+                if token[1] == 'r':
+                    if token[2] == 'a':
+                        rad_num = int(token[4:-1])
+                        continue
+                    on_ring = True
+                    if len(token) > 3:
+                        functional_token += token[2:-1]
+                    continue
+                if token[1] == 'A':
+                    aromatic = True
+                    continue
+                if token[1] == 'f':
+                    if token[2] == 'c':
+                        fc = int(token[3:-1])
+                        if not fc == 0:
+                            b = True
+
+                        continue
+                if token[1:4] == 'sym':
+                    continue
+
+            if token[-1] == '>':
+                link_index = int(token[:-1])
+                links.append(f"({link_bond}[{link_index}*])")
+                link_bond = ''
+                link_index = ''
+                continue
+            if not token == '^atom^':
+                functional_token += token
+        results.append(atoms)
+
+    return results
 
 def gen2mol(texts):
     result = []
@@ -359,8 +425,8 @@ def gen2mol(texts):
     for line in texts:
         if isinstance(line, tuple):
             line = line[0]
+        processed_line = mol_translate(line)
         try:
-            processed_line = mol_translate(line)
             result.append(auto_connect_fragments_by_dummy_atoms(processed_line))
         except:
             continue
