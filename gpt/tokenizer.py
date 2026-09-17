@@ -50,11 +50,7 @@ def get_new_tokenizer(source):
 
     # 训练 tokenizer
     tokenizer_frag.train_from_iterator([], trainer_1)
-    tokenizer_frag.add_tokens(frag_tokens)
-
-    # for token in frag_tokens:
-    #     if token[0] == '[':
-    #         token_property_cal(mol_translate('<sep>' + token)[0])
+    tokenizer_frag.add_tokens([token for token in frag_tokens if token not in REMOVED_SPECIAL_TOKENS])
 
     print(f"saving tokenizer")
     import os
@@ -85,18 +81,27 @@ def get_new_tokenizer_with_extra(n, source, extra_tokens=[]):
 
     # 训练 tokenizer
     tokenizer_frag.train_from_iterator([], trainer_1)
-    tokenizer_frag.add_tokens(frag_tokens)
+    tokenizer_frag.add_tokens([token for token in frag_tokens if token not in REMOVED_SPECIAL_TOKENS])
     print(f"saving tokenizer")
 
     tokenizer_frag.save("gpt/vocab/frag_tokenizer_" + source + ".json")
 
     return tokenizer_frag
 
-def tokenizer_from_file(file_path='gpt/vocab/frag_tokenizer.json'):
-    """读取分词文件"""
-    tokenizer = Tokenizer(WordLevel(unk_token=UNK_TOKEN))
-    tokenizer = tokenizer.from_file(file_path)
+def validate_special_tokens(tokenizer):
+    """Reject incompatible IDs before they can corrupt EOS handling or training."""
+    if (any(tokenizer.token_to_id(token) != index
+            for index, token in enumerate(SPECIAL_TOKENS))
+            or any(tokenizer.token_to_id(token) is not None for token in REMOVED_SPECIAL_TOKENS)):
+        raise ValueError(
+            "Legacy or incompatible tokenizer: rebuild the vocabulary (PAMF: s=True) "
+            "and retrain, or migrate the tokenizer and checkpoint together. "
+            "Required special IDs: <pad>=0, </s>=1, <unk>=2, <start>=3.")
     return tokenizer
+
+
+def tokenizer_from_file(file_path='gpt/vocab/frag_tokenizer.json'):
+    return validate_special_tokens(Tokenizer.from_file(str(file_path)))
 
 
 def pamf_training_paths(source):
@@ -133,7 +138,7 @@ def get_new_pamf_tokenizer(source, *, train_file=None, output_path=None):
             raise ValueError(f'Invalid PAMF token sentence at row {key}')
         tokens.update(split_pamf_sentence(sentence))
     vocabulary = {token: index for index, token in enumerate(SPECIAL_TOKENS)}
-    for token in sorted(tokens - set(SPECIAL_TOKENS)):
+    for token in sorted(tokens - set(SPECIAL_TOKENS) - REMOVED_SPECIAL_TOKENS):
         vocabulary[token] = len(vocabulary)
     result = Tokenizer(WordLevel(vocab=vocabulary, unk_token=UNK_TOKEN))
     # Whitespace() splits punctuation; PAMF/FST tokens must remain atomic.

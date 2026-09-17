@@ -74,9 +74,13 @@ dropout_rate = 0.1
 
 rank = 0
 
-SUFFIX, PAD_TOKEN, BOS_TOKEN, EOS_TOKEN, UNK_TOKEN, CLS_TOKEN, START_TOKEN, SEP_TOKEN, SEP1_TOKEN = "", "<pad>", "<s>", "</s>", "<unk>", "<cls>", "<start>", "<sep>", "<sep1>"
-SPECIAL_TOKENS = [PAD_TOKEN, BOS_TOKEN, EOS_TOKEN, UNK_TOKEN, CLS_TOKEN, START_TOKEN, SEP_TOKEN, SEP1_TOKEN]
-PAD_TOKEN_ID, BOS_TOKEN_ID, EOS_TOKEN_ID, UNK_TOKEN_ID, CLS_TOKEN_ID, START_TOKEN_ID, SEP_TOKEN_ID, SEP1_TOKEN = range(8)
+SUFFIX = ""
+PAD_TOKEN, EOS_TOKEN, UNK_TOKEN, START_TOKEN = "<pad>", "</s>", "<unk>", "<start>"
+SPECIAL_TOKENS = [PAD_TOKEN, EOS_TOKEN, UNK_TOKEN, START_TOKEN]
+PAD_TOKEN_ID, EOS_TOKEN_ID, UNK_TOKEN_ID, START_TOKEN_ID = range(4)
+# Retained only to reject legacy vocabularies and exclude unused training tokens.
+REMOVED_SPECIAL_TOKENS = frozenset({"<s>", "<cls>", "<sep>", "<sep1>"})
+
 
 protein_emb_size = 44
 prop_len = 3

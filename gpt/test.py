@@ -710,18 +710,53 @@ def evaluate_property_condition_usage(model, data_iterable, conditional=("prop",
                 property_shuffle_delta=(shuffled - matched) / tokens)
 
 
-def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unconditional",), save_name="GPT.pt",
-          output_dir=None):
+def _create_training_directory(root, model_name):
+    """Atomically reserve a new run directory, even for simultaneous starts."""
+    from datetime import datetime
     from pathlib import Path
-    output_dir = Path(output_dir) if output_dir is not None else Path('checkpoints/fragGPT')
-    output_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    stem = f"{model_name}_{stamp}"
+    index = 0
+    while True:
+        candidate = root / (stem if index == 0 else f"{stem}_{index}")
+        try:
+            candidate.mkdir()
+            return candidate
+        except FileExistsError:
+            index += 1
+
+
+def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unconditional",), save_name="GPT.pt",
+          output_dir=None, tokenizer=None, training_config=None):
+    """Save each invocation in its own timestamped directory below output_dir."""
+    import json
+    from pathlib import Path
+    if Path(save_name).name != save_name:
+        raise ValueError("save_name must be a filename within the training directory")
+    model_name = '_'.join(conditional) + (f'_{p_type}' if p_type else '')
+    output_dir = _create_training_directory(
+        output_dir if output_dir is not None else 'checkpoints/fragGPT', model_name)
+    if tokenizer is not None:
+        tokenizer.save(str(output_dir / 'frag_tokenizer.json'))
+    config = dict(training_config or {})
+    config.update(epochs=epochs, lr=lr, vocab_size=vs, p_type=p_type,
+                  conditional=list(conditional), output_dir=str(output_dir.resolve()),
+                  checkpoint=save_name)
+    (output_dir / 'training_config.json').write_text(
+        json.dumps(config, ensure_ascii=False, indent=2), encoding='utf-8')
+    print(f"Training output: {output_dir.resolve()}")
     if model is None:
         model = GPT(vocab_size=vs, prop_len=prop_len, p_type=p_type, conditional=conditional)
         try:
             state = torch.load("checkpoints/fragGPT/GPT.pt", map_location=device)
             model.load_state_dict(state, strict=False)
         except Exception:
+            print('new model is training')
             pass
+
+    model.training_output_dir = str(output_dir.resolve())
 
     params = list(model.parameters())
     total_params = sum(p.numel() for p in params)

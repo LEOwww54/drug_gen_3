@@ -1,6 +1,25 @@
 from ZINC_refined.dataloader import data_from_ZINC_refined
 from decomposer import mol_decom_mp
 
+def mol_decomp_mp_ZINC_refined_pamf_pkl(n_core, *, pamf_config=None, pamf_reference=None):
+    """PAMF train/test PKLs; return tokens in train + test input order.
+
+    Use the dataset's existing split labels, loading all rows with n=0.
+    Call under an if __name__ == '__main__' guard for multiprocessing.
+    pamf_config defaults to GFN2-xTB; duplicate samples retain their positions.
+    """
+    smiles, _ = data_from_ZINC_refined(n=0)
+    results = []
+    for split in ('train', 'test'):
+        path = f'gpt/frag_file/frag_decom_ZINC_refined_pamf_{split}.pkl'
+        result = mol_decom_mp(
+            smiles=smiles[split], n_core=n_core, output_format='pkl', output_path=[path],
+            method='pamf', pamf_config=pamf_config, pamf_reference=pamf_reference,
+            statistics_path=f'stru_data_ZINC_refined_pamf_{split}.json')
+        results.extend(result[1])
+    return results
+
+
 def mol_decomp_mp_ZINC_refined(n_core):
     result, result2 = _mol_decomp_mp_ZINC_refined(n_core)
 

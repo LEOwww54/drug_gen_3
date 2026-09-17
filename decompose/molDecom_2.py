@@ -229,7 +229,7 @@ class VirtualAtomConnectionProcessor:
             conn_info = []
             for connection in connections:
                 if connection['atom_number'] == atom_index:
-                    tmp = f"<m{connection['bond_symbol']}"
+                    tmp = "<m" if connection["bond_symbol"] == "-" else f"<m{connection['bond_symbol']}"
                     conn_info.append(tmp)
                     tmp = f"{connection['connection_number']}>"
                     conn_info.append(tmp)
@@ -316,7 +316,7 @@ class VirtualAtomConnectionProcessor:
 
                     for connection in connections:
                         if connection['atom_number'] == atom_count:
-                            tmp = f"<m{connection['bond_symbol']}"
+                            tmp = "<m" if connection["bond_symbol"] == "-" else f"<m{connection['bond_symbol']}"
                             extra_info.append(tmp)
                             tmp = f"{connection['connection_number']}>"
                             extra_info.append(tmp)

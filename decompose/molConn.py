@@ -301,8 +301,9 @@ def _translate_fragment(tokens):
                 raise ValueError(f'Invalid attachment number: {token!r}')
             links.append(f'({pending_bond}[{token[:-1]}*])')
             pending_bond = None
-        elif re.fullmatch(r'<m[-=#:~]', token):
-            pending_bond = token[2:]
+        elif re.fullmatch(r'<m[-=#:~]?', token):
+            # New compact attachment syntax defaults to SINGLE; old <m- works too.
+            pending_bond = token[2:] or '-'
         elif re.fullmatch(r'<fc[+-]?\d+>', token):
             charge = int(token[3:-1])
         elif re.fullmatch(r'<rad\d+>', token):
@@ -331,6 +332,8 @@ def mol_translate(text):
 
     Legacy fc/rad metadata is accepted for existing datasets. New bracket atom
     tokens are used literally, including isotope, chirality, H count and charge.
+    Kekulized fragments omit single-bond tokens; <m N> denotes a single-bond
+    attachment. Explicit '-' and '<m- N>' remain supported for older datasets.
     """
     if '<sep>' in text:
         text = text.split('<sep>', 1)[1]

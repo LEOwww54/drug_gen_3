@@ -8,14 +8,13 @@ from torch.utils.data import DataLoader
 
 
 def train_fragGPT_pamf(source, epoch, s=False, *, batch_size=50, lr=8e-5,
-                        p_type='Riemannian', conditional=('prop',), output_dir=None):
+                        p_type='Riemannian', conditional=('prop',), output_dir=None, model=None):
     """Train on existing PAMF train/test PKLs. s=True rebuilds TRAIN-only vocab.
 
     No automatic decomposition or loading of a legacy-vocabulary checkpoint.
     Default condition is the existing QED/logP/SA property vector; choose
     conditional=('unconditional',) for unconditional training.
     """
-    import json
     import math
     from pathlib import Path
     from gpt.tokenizer import pamf_training_paths, get_new_pamf_tokenizer
@@ -36,18 +35,17 @@ def train_fragGPT_pamf(source, epoch, s=False, *, batch_size=50, lr=8e-5,
         get_new_pamf_tokenizer(source)
     loaders, tokenizer_ = get_frag_default_dataloader_pamf(
         source, batch_size=batch_size, require_properties='prop' in conditional)
-    destination = Path(output_dir) if output_dir is not None else paths['checkpoint']/f'{conditional[0]}_{p_type}'
-    destination.mkdir(parents=True, exist_ok=True)
-    tokenizer_.save(str(destination/'frag_tokenizer.json'))
-    (destination/'training_config.json').write_text(json.dumps(
-        dict(source=source, decomposition='pamf', epochs=epoch, lr=lr,
-             batch_size=batch_size, p_type=p_type, conditional=conditional,
-             train_file=str(paths['train']), test_file=str(paths['test']),
-             vocab_size=tokenizer_.get_vocab_size()), ensure_ascii=False, indent=2), encoding='utf-8')
+    destination = Path(output_dir) if output_dir is not None else paths['checkpoint']
+    config = dict(source=source, decomposition='pamf', batch_size=batch_size,
+                  train_file=str(paths['train']), test_file=str(paths['test']))
     # Supplying a fresh model bypasses gpt.train's implicit legacy checkpoint load.
-    model = gpt.GPT(vocab_size=tokenizer_.get_vocab_size(), p_type=p_type, conditional=conditional)
+    if model == 'new':
+        model = gpt.GPT(vocab_size=tokenizer_.get_vocab_size(), p_type=p_type, conditional=conditional)
+    else:
+        model = None
     return gpt.train(loaders, epoch, tokenizer_.get_vocab_size(), lr, model=model,
-                     p_type=p_type, conditional=conditional, output_dir=destination)
+                     p_type=p_type, conditional=conditional, output_dir=destination,
+                     tokenizer=tokenizer_, training_config=config)
 
 
 def train_fragGPT_ZINC_250K_pamf(epoch, s=False, **kwargs):
@@ -55,7 +53,7 @@ def train_fragGPT_ZINC_250K_pamf(epoch, s=False, **kwargs):
 
 
 def train_fragGPT_ZINC_refined_pamf(epoch, s=False, **kwargs):
-    kwargs.setdefault('batch_size', 100)
+    kwargs.setdefault('batch_size', 50)
     return train_fragGPT_pamf('ZINC_refined', epoch, s, **kwargs)
 
 def train_fragGPT_ZINC_250K_unconditional_lora_1(epoch, s, s1):
@@ -111,7 +109,7 @@ if __name__ == '__main__':
     ## md_test()
     # train_fragGPT_chembl_unconditional_lora_1(2, True, False)
     #train_fragGPT_ZINC_250K_prop_Riemmanian(5, True, False)
-    train_fragGPT_ZINC_250K_pamf(20, False, batch_size=50, lr=1e-4)
+    train_fragGPT_ZINC_refined_pamf(20, True, batch_size=50, lr=8e-5)
 
     # finetune_alot_ZINC_geom(epoch=8, s=True)
 

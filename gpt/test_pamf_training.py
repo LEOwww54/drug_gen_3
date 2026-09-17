@@ -54,6 +54,10 @@ class PAMFTrainingTests(unittest.TestCase):
             paths = self.fixtures(folder)
             tok = tokenization.get_new_pamf_tokenizer('ZINC_250K', train_file=paths['train'],
                                                      output_path=paths['tokenizer'])
+            for removed in constant.REMOVED_SPECIAL_TOKENS:
+                self.assertIsNone(tok.token_to_id(removed))
+            for index, token in enumerate(constant.SPECIAL_TOKENS):
+                self.assertEqual(tok.token_to_id(token), index)
             self.assertIsNone(tok.token_to_id('unseen'))
             self.assertEqual(tok.encode('[C] i1').ids, [tok.token_to_id('[C]'), tok.token_to_id('i1')])
             self.assertIsNone(tok.token_to_id('<m- 1>'))
@@ -75,6 +79,17 @@ class PAMFTrainingTests(unittest.TestCase):
             self.assertEqual(test.unknown_tokens, 1)
             self.assertIn(constant.UNK_TOKEN_ID, test[0]['decoder_input'])
 
+    def test_legacy_tokenizer_is_rejected(self):
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        legacy = ['<pad>', '<s>', '</s>', '<unk>', '<cls>', '<start>', '<sep>', '<sep1>']
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'legacy.json'
+            Tokenizer(WordLevel(vocab={t: i for i, t in enumerate(legacy)},
+                                unk_token='<unk>')).save(str(path))
+            with self.assertRaisesRegex(ValueError, 'Legacy or incompatible'):
+                tokenization.tokenizer_from_file(path)
+
     def test_both_training_entries_one_cpu_epoch(self):
         small = dict(d_model=24, emb_size=24, d_ff=48, d_k=12, d_v=12,
                      n_heads=2, n_layers=1, device=torch.device('cpu'))
@@ -91,11 +106,14 @@ class PAMFTrainingTests(unittest.TestCase):
                             patch.object(training.gpt.torch, 'load', wraps=torch.load) as load_mock:
                         model = fn(1, s=True, batch_size=2, p_type=p_type, conditional=conditional,
                                    output_dir=paths['checkpoint'])
+                    run_dir = Path(model.training_output_dir)
+                    self.assertEqual(run_dir.parent, paths['checkpoint'].resolve())
+                    self.assertTrue(run_dir.name.startswith(f'{conditional[0]}_{p_type}_'))
                     self.assertEqual(load_mock.call_count, 1)
-                    self.assertEqual(Path(load_mock.call_args.args[0]), paths['checkpoint']/'GPT.pt')
-                    self.assertTrue((paths['checkpoint']/'GPT.pt').is_file())
-                    self.assertTrue((paths['checkpoint']/'frag_tokenizer.json').is_file())
-                    metadata = json.loads((paths['checkpoint']/'training_config.json').read_text())
+                    self.assertEqual(Path(load_mock.call_args.args[0]), run_dir/'GPT.pt')
+                    self.assertTrue((run_dir/'GPT.pt').is_file())
+                    self.assertTrue((run_dir/'frag_tokenizer.json').is_file())
+                    metadata = json.loads((run_dir/'training_config.json').read_text())
                     self.assertEqual(metadata['source'], source)
                     self.assertEqual(model.projection.out_features, metadata['vocab_size'])
         finally:

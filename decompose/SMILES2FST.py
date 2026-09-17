@@ -355,7 +355,8 @@ class VirtualAtomConnectionProcessor:
             conn_info = []
             for connection in connections:
                 if connection['atom_number'] == atom_index:
-                    conn_info.append(f"<m{connection['bond_symbol']}")
+                    bond = connection['bond_symbol']
+                    conn_info.append('<m' if bond == '-' else f'<m{bond}')
                     conn_info.append(f"{connection['connection_number']}>")
 
             token.append('^')

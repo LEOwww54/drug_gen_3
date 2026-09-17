@@ -14,6 +14,28 @@ from decompose.base import _pamf_statistics_smiles, _pamf_one_record, _fragment_
 
 
 class AdapterTests(unittest.TestCase):
+    def test_refined_pamf_splits_options_and_return_order(self):
+        from ZINC_refined.dataprocess import mol_decomp_mp_ZINC_refined_pamf_pkl
+        splits = {'train': ['CC', 'CC'], 'test': ['CO']}
+        config = PAMFConfig(mode='rules')
+        reference = object()
+        with patch('ZINC_refined.dataprocess.data_from_ZINC_refined',
+                   return_value=(splits, ['CC', 'CC', 'CO'])) as load, \
+                patch('ZINC_refined.dataprocess.mol_decom_mp', side_effect=[
+                    ([], ['train1', 'train2'], [], [], {}),
+                    ([], ['test1'], [], [], {})]) as run:
+            result = mol_decomp_mp_ZINC_refined_pamf_pkl(
+                2, pamf_config=config, pamf_reference=reference)
+        load.assert_called_once_with(n=0)
+        self.assertEqual(result, ['train1', 'train2', 'test1'])
+        self.assertEqual(run.call_count, 2)
+        for split, call in zip(('train', 'test'), run.call_args_list):
+            self.assertEqual(call.kwargs, dict(
+                smiles=splits[split], n_core=2, output_format='pkl',
+                output_path=[f'gpt/frag_file/frag_decom_ZINC_refined_pamf_{split}.pkl'],
+                method='pamf', pamf_config=config, pamf_reference=reference,
+                statistics_path=f'stru_data_ZINC_refined_pamf_{split}.json'))
+
     def test_custom_statistics_paths_do_not_overwrite(self):
         with tempfile.TemporaryDirectory() as tmp:
             train_path = Path(tmp) / 'nested' / 'train.json'

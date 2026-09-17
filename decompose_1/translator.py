@@ -124,13 +124,17 @@ def getR(connections: dict, idx: int, text: dict, ring_pairs: dict):
     while pending:
         item = pending.pop()
         if isinstance(item, str):
-            tokens.append(item)
+            if item:
+                tokens.append(item)
             continue
         _, atom = item
         tokens.extend(text[atom])
         for number, bond in sorted(ring_pairs.get(atom, ()), key=lambda pair: pair[0]):
             label = f'<r{number}>' if number < 10 else f'<r%{number}>'
-            tokens.extend([bond_type_to_str(bond), label])
+            symbol = bond_type_to_str(bond)
+            if symbol:
+                tokens.append(symbol)
+            tokens.append(label)
         descendants = children[atom]
         if not descendants:
             continue
@@ -146,7 +150,8 @@ def getR(connections: dict, idx: int, text: dict, ring_pairs: dict):
 
 
 def bond_type_to_str(bond_type) -> str:
-    mapping = {Chem.BondType.SINGLE: '-', Chem.BondType.DOUBLE: '=',
+    # The serialized graph is Kekulized: omitted bonds are single bonds.
+    mapping = {Chem.BondType.SINGLE: '', Chem.BondType.DOUBLE: '=',
                Chem.BondType.TRIPLE: '#', Chem.BondType.AROMATIC: ':'}
     return mapping.get(bond_type, '-')
 

@@ -364,9 +364,7 @@ class PAMFDataSet(PLDataSet):
 
     def __init__(self, path, tokenizer_, *, require_properties=True):
         import math
-        for index, token in enumerate(SPECIAL_TOKENS):
-            if tokenizer_.token_to_id(token) != index:
-                raise ValueError('PAMF tokenizer special IDs do not match constant.py')
+        tokenizer.validate_special_tokens(tokenizer_)
         with open(path, 'rb') as handle:
             records = pkl.load(handle)['mol']
         datas = []
