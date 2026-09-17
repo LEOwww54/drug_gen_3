@@ -229,9 +229,9 @@ class VirtualAtomConnectionProcessor:
             conn_info = []
             for connection in connections:
                 if connection['atom_number'] == atom_index:
-                    tmp = "<m" if connection["bond_symbol"] == "-" else f"<m{connection['bond_symbol']}"
-                    conn_info.append(tmp)
-                    tmp = f"{connection['connection_number']}>"
+                    conn_info.append("<m")
+                    bond = "" if connection["bond_symbol"] == "-" else connection["bond_symbol"]
+                    tmp = f"{bond}{connection['connection_number']}>"
                     conn_info.append(tmp)
 
             token.append(symbol)
@@ -316,9 +316,9 @@ class VirtualAtomConnectionProcessor:
 
                     for connection in connections:
                         if connection['atom_number'] == atom_count:
-                            tmp = "<m" if connection["bond_symbol"] == "-" else f"<m{connection['bond_symbol']}"
-                            extra_info.append(tmp)
-                            tmp = f"{connection['connection_number']}>"
+                            extra_info.append("<m")
+                            bond = "" if connection["bond_symbol"] == "-" else connection["bond_symbol"]
+                            tmp = f"{bond}{connection['connection_number']}>"
                             extra_info.append(tmp)
 
                     if Aromatic:

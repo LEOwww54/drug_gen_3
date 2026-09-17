@@ -297,13 +297,21 @@ def _translate_fragment(tokens):
         if atom_token is None:
             raise ValueError(f'Expected an atom before {token!r}')
         if pending_bond is not None:
-            if not re.fullmatch(r'[1-9]\d*>', token):
+            match = re.fullmatch(r'([-=#:~]?)([1-9]\d*)>', token)
+            if match is None:
                 raise ValueError(f'Invalid attachment number: {token!r}')
-            links.append(f'({pending_bond}[{token[:-1]}*])')
+            token_bond, connection_number = match.groups()
+            if pending_bond and token_bond and pending_bond != token_bond:
+                raise ValueError(f'Conflicting attachment bonds: {pending_bond!r} and {token_bond!r}')
+            bond = token_bond or pending_bond or '-'
+            links.append(f'({bond}[{connection_number}*])')
             pending_bond = None
-        elif re.fullmatch(r'<m[-=#:~]?', token):
-            # New compact attachment syntax defaults to SINGLE; old <m- works too.
-            pending_bond = token[2:] or '-'
+        elif token == '<m':
+            # The marker carries no bond; an optional bond prefixes the number token.
+            pending_bond = ''
+        elif re.fullmatch(r'<m[-=#:~]', token):
+            # Continue accepting the former layout (<m= 1>) when decoding old data.
+            pending_bond = token[2:]
         elif re.fullmatch(r'<fc[+-]?\d+>', token):
             charge = int(token[3:-1])
         elif re.fullmatch(r'<rad\d+>', token):
@@ -332,8 +340,9 @@ def mol_translate(text):
 
     Legacy fc/rad metadata is accepted for existing datasets. New bracket atom
     tokens are used literally, including isotope, chirality, H count and charge.
-    Kekulized fragments omit single-bond tokens; <m N> denotes a single-bond
-    attachment. Explicit '-' and '<m- N>' remain supported for older datasets.
+    Kekulized fragments omit single-bond tokens; ``<m N>`` denotes a single-bond
+    attachment and ``<m =N>`` denotes a double-bond attachment. The former
+    ``<m= N>`` layout remains supported when decoding older datasets.
     """
     if '<sep>' in text:
         text = text.split('<sep>', 1)[1]
