@@ -61,8 +61,8 @@ vocab_size = 100
 # dict_datas = json.load(open('dict_datas.json', 'r'))
 # word2id, id2word = dict_datas['word2id'], dict_datas['id2word']
 emb_size = 768
-max_pos = 1800
-max_pos_1 = 1800
+max_pos = 900
+max_pos_1 = max_pos
 
 d_model = emb_size  # Embedding Size
 d_ff = 2048  # FeedForward dimension

@@ -728,33 +728,88 @@ def _create_training_directory(root, model_name):
             index += 1
 
 
+def checkpoint_artifact_paths(checkpoint_dir):
+    """Resolve and validate the model/tokenizer pair used for continuation."""
+    from pathlib import Path
+
+    directory = Path(checkpoint_dir).expanduser().resolve()
+    if not directory.is_dir():
+        raise FileNotFoundError(f'Checkpoint directory does not exist: {directory}')
+    checkpoint = directory / 'GPT.pt'
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f'GPT checkpoint does not exist: {checkpoint}')
+    tokenizer_path = directory / 'frag_tokenizer.json'
+    if not tokenizer_path.is_file():
+        raise FileNotFoundError(f'GPT tokenizer does not exist: {tokenizer_path}')
+    return {'directory': directory, 'model': checkpoint, 'tokenizer': tokenizer_path}
+
+
+def _load_checkpoint_from_directory(model, checkpoint_dir):
+    """Load ``GPT.pt`` from an explicitly supplied continuation directory."""
+    artifacts = checkpoint_artifact_paths(checkpoint_dir)
+    checkpoint = artifacts['model']
+    try:
+        state = torch.load(checkpoint, map_location=device, weights_only=True)
+    except TypeError:  # Compatibility with older PyTorch releases.
+        state = torch.load(checkpoint, map_location=device)
+    if isinstance(state, dict) and isinstance(state.get('state_dict'), dict):
+        state = state['state_dict']
+    if not isinstance(state, dict):
+        raise ValueError(f'Checkpoint does not contain a state dictionary: {checkpoint}')
+    model.load_state_dict(state, strict=False)
+    return checkpoint.resolve()
+
+
 def train(data_loader, epochs, vs, lr, model=None, p_type="", conditional=("unconditional",), save_name="GPT.pt",
-          output_dir=None, tokenizer=None, training_config=None):
-    """Save each invocation in its own timestamped directory below output_dir."""
+          output_dir=None, tokenizer=None, training_config=None, checkpoint_dir=None):
+    """Train GPT; optionally continue from ``checkpoint_dir/GPT.pt``."""
     import json
     from pathlib import Path
     if Path(save_name).name != save_name:
         raise ValueError("save_name must be a filename within the training directory")
+    if model is None:
+        model = GPT(vocab_size=vs, prop_len=prop_len, p_type=p_type, conditional=conditional)
+    continuation_checkpoint = None
+    continuation_tokenizer = None
+    if checkpoint_dir is not None:
+        if tokenizer is None:
+            raise ValueError('checkpoint_dir requires the continuation tokenizer to be loaded')
+        artifacts = checkpoint_artifact_paths(checkpoint_dir)
+        continuation_tokenizer = artifacts['tokenizer'].resolve()
+        if tokenizer is not None:
+            from gpt.tokenizer import tokenizer_from_file
+            saved_tokenizer = tokenizer_from_file(continuation_tokenizer)
+            if tokenizer.get_vocab() != saved_tokenizer.get_vocab():
+                raise ValueError(
+                    f'Training tokenizer does not match continuation tokenizer: '
+                    f'{continuation_tokenizer}')
+        continuation_checkpoint = _load_checkpoint_from_directory(model, checkpoint_dir)
+        print(f'Continuing training from: {continuation_checkpoint}')
+        print(f'Using continuation tokenizer: {continuation_tokenizer}')
     model_name = '_'.join(conditional) + (f'_{p_type}' if p_type else '')
     output_dir = _create_training_directory(
         output_dir if output_dir is not None else 'checkpoints/fragGPT', model_name)
+    import shutil
+    from importlib.util import source_from_cache
+    constant_source = Path(constant.__file__).resolve()
+    if constant_source.suffix == '.pyc':
+        constant_source = Path(source_from_cache(str(constant_source)))
+    if not constant_source.is_file():
+        raise FileNotFoundError(f'Cannot save constant parameter snapshot: {constant_source}')
+    shutil.copy2(constant_source, output_dir / 'constant.py')
     if tokenizer is not None:
         tokenizer.save(str(output_dir / 'frag_tokenizer.json'))
     config = dict(training_config or {})
     config.update(epochs=epochs, lr=lr, vocab_size=vs, p_type=p_type,
                   conditional=list(conditional), output_dir=str(output_dir.resolve()),
                   checkpoint=save_name)
+    config['continuation_checkpoint'] = (str(continuation_checkpoint)
+                                         if continuation_checkpoint is not None else None)
+    config['continuation_tokenizer'] = (str(continuation_tokenizer)
+                                        if continuation_tokenizer is not None else None)
     (output_dir / 'training_config.json').write_text(
         json.dumps(config, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f"Training output: {output_dir.resolve()}")
-    if model is None:
-        model = GPT(vocab_size=vs, prop_len=prop_len, p_type=p_type, conditional=conditional)
-        try:
-            state = torch.load("checkpoints/fragGPT/GPT.pt", map_location=device)
-            model.load_state_dict(state, strict=False)
-        except Exception:
-            print('new model is training')
-            pass
 
     model.training_output_dir = str(output_dir.resolve())
 
@@ -876,10 +931,17 @@ def fine_tune_fragGPT_molonly(epoch, model_path, tokenizer_path, train_path="gpt
     return train(data_loaders, epoch, tokenizer__.get_vocab_size(), lr, model=model)
 
 
-def train_PL_fragGPT(epoch, plk_path):
-    data_loaders, tokenizer__ = get_PL_dataloader(plk_path=plk_path)
+def train_PL_fragGPT(epoch, plk_path, tokenizer_path=None, checkpoint_dir=None):
+    if checkpoint_dir is not None:
+        tokenizer_path = checkpoint_artifact_paths(checkpoint_dir)['tokenizer']
+    if tokenizer_path is None:
+        raise ValueError('tokenizer_path is required when checkpoint_dir is None')
+    data_loaders, tokenizer__ = get_PL_dataloader(
+        plk_path=plk_path, tokenizer_path=tokenizer_path)
     lr = 4e-4
-    return train(((data_loaders,), None, data_loaders), epoch, tokenizer__.get_vocab_size(), lr)
+    return train(((data_loaders,), None, data_loaders), epoch,
+                 tokenizer__.get_vocab_size(), lr, tokenizer=tokenizer__,
+                 checkpoint_dir=checkpoint_dir)
 
 
 if __name__ == "__main__":

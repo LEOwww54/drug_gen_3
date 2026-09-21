@@ -35,6 +35,9 @@ def get_token(source):
     return frag_tokens
 
 def get_new_tokenizer(source):
+    if source in ('ZINC_250K_frag_pretrain', 'ZINC_refined_frag_pretrain',
+                  'ZIINC_refined_frag_pretrain'):
+        return get_new_frag_pretrain_tokenizer(source)
     if source in ('ZINC_250K_pamf', 'ZINC_refined_pamf'):
         return get_new_pamf_tokenizer(source.removesuffix('_pamf'))
     print(f"training new tokenizer")
@@ -142,6 +145,70 @@ def get_new_pamf_tokenizer(source, *, train_file=None, output_path=None):
         vocabulary[token] = len(vocabulary)
     result = Tokenizer(WordLevel(vocab=vocabulary, unk_token=UNK_TOKEN))
     # Whitespace() splits punctuation; PAMF/FST tokens must remain atomic.
+    result.pre_tokenizer = WhitespaceSplit()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    result.save(str(output_path))
+    return result
+
+
+def get_new_frag_pretrain_tokenizer(source, *, train_file=None, output_path=None,
+                                    reuse_pamf_vocab=True, base_tokenizer_path=None,
+                                    pamf_vocab_only=None):
+    """Build fragment vocabulary, preserving PAMF token IDs by default.
+
+    PAMF vocabulary reuse guarantees attachment markers exist; tokens observed
+    only in the augmented fragment corpus are appended deterministically.
+    """
+    from gpt.frag_pretrain_dataprocess import (frag_pretrain_paths,
+                                               normalize_frag_pretrain_source)
+
+    source = normalize_frag_pretrain_source(source)
+    paths = frag_pretrain_paths(source)
+    train_file = Path(train_file) if train_file is not None else paths['train']
+    output_path = Path(output_path) if output_path is not None else paths['tokenizer']
+    with train_file.open('rb') as handle:
+        payload = pickle.load(handle)
+    if payload.get('format') != 'frag_pretrain_v1' or not payload.get('mol'):
+        raise ValueError(f'Invalid or empty fragment-pretraining PKL: {train_file}')
+    tokens = set()
+    for key, row in payload['mol'].items():
+        sentence = row.get('frag')
+        if not isinstance(sentence, str) or not sentence.strip():
+            raise ValueError(f'Invalid fragment-pretraining sentence at row {key}')
+        words = split_pamf_sentence(sentence)
+        if words and words[0] == START_TOKEN:
+            words = words[1:]
+        if words and words[-1] == EOS_TOKEN:
+            words = words[:-1]
+        if not words:
+            raise ValueError(f'Empty fragment-pretraining sentence at row {key}')
+        tokens.update(words)
+    if not isinstance(reuse_pamf_vocab, bool):
+        raise ValueError('reuse_pamf_vocab must be boolean')
+    if pamf_vocab_only is None:
+        pamf_vocab_only = payload.get('vocabulary_mode') == 'pamf_only'
+    if not isinstance(pamf_vocab_only, bool):
+        raise ValueError('pamf_vocab_only must be boolean or None')
+    if pamf_vocab_only and not reuse_pamf_vocab:
+        raise ValueError('pamf_vocab_only requires reuse_pamf_vocab=True')
+    if reuse_pamf_vocab:
+        base_path = (Path(base_tokenizer_path) if base_tokenizer_path is not None else
+                     Path(__file__).resolve().parent / 'vocab' /
+                     f'frag_tokenizer_{source}_pamf.json')
+        if not base_path.is_file():
+            raise FileNotFoundError(f'Missing PAMF base tokenizer: {base_path}')
+        base = tokenizer_from_file(base_path)
+        vocabulary = dict(sorted(base.get_vocab().items(), key=lambda item: item[1]))
+    else:
+        vocabulary = {token: index for index, token in enumerate(SPECIAL_TOKENS)}
+    missing = tokens - set(vocabulary)
+    if pamf_vocab_only and missing:
+        preview = ', '.join(repr(token) for token in sorted(missing)[:10])
+        raise ValueError(f'Original PAMF vocabulary does not cover fragment tokens: {preview}')
+    if not pamf_vocab_only:
+        for token in sorted(missing - set(SPECIAL_TOKENS) - REMOVED_SPECIAL_TOKENS):
+            vocabulary[token] = len(vocabulary)
+    result = Tokenizer(WordLevel(vocab=vocabulary, unk_token=UNK_TOKEN))
     result.pre_tokenizer = WhitespaceSplit()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result.save(str(output_path))

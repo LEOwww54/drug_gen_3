@@ -1,4 +1,5 @@
 import pickle as pkl
+from bisect import bisect_right
 from math import floor
 
 import torch
@@ -419,6 +420,89 @@ def get_pamf_dataloader_without_split(tokenizer_, train_file, test_file, *,
         valid_loader, test_loader = _split_validation_test(test, batch_size, test.padding_batch)
     print(f'PAMF validation={len(valid_loader.dataset)}, test={len(test_loader.dataset)}')
     return [train_loader], [valid_loader], [test_loader]
+
+
+class FragPretrainDataSet(PLDataSet):
+    """Count-expanded view of a compact single-fragment SISR PKL."""
+
+    def __init__(self, path, tokenizer_, *, row_keys=None):
+        tokenizer.validate_special_tokens(tokenizer_)
+        with open(path, 'rb') as handle:
+            payload = pkl.load(handle)
+        if payload.get('format') != 'frag_pretrain_v1' or not isinstance(payload.get('mol'), dict):
+            raise ValueError(f'Invalid fragment-pretraining PKL: {path}')
+        records = payload['mol']
+        keys = list(records) if row_keys is None else list(row_keys)
+        datas, cumulative = [], []
+        self.row_ids, self.original_smiles, self.counts = [], [], []
+        self.skipped_rows, self.unknown_tokens = [], 0
+        total = 0
+        for key in keys:
+            row = records[key]
+            words = tokenizer.split_pamf_sentence(row['frag'])
+            if words and words[0] == START_TOKEN:
+                words = words[1:]
+            if words and words[-1] == EOS_TOKEN:
+                words = words[:-1]
+            if not words or len(words) + 2 > constant.max_pos:
+                self.skipped_rows.append(key)
+                continue
+            count = row.get('count')
+            if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+                raise ValueError(f'Invalid fragment count in {path}, row {key}')
+            ids = [tokenizer_.token_to_id(word) for word in words]
+            self.unknown_tokens += sum(i is None for i in ids) * count
+            ids = [UNK_TOKEN_ID if i is None else i for i in ids]
+            datas.append((None, [START_TOKEN_ID, *ids, EOS_TOKEN_ID], None, None))
+            total += count
+            cumulative.append(total)
+            self.row_ids.append(key)
+            self.original_smiles.append(row['oring'])
+            self.counts.append(count)
+        super().__init__(datas)
+        self.cumulative_counts = cumulative
+
+    def __len__(self):
+        return self.cumulative_counts[-1] if self.cumulative_counts else 0
+
+    def __getitem__(self, item):
+        if item < 0:
+            item += len(self)
+        if item < 0 or item >= len(self):
+            raise IndexError(item)
+        unique_index = bisect_right(self.cumulative_counts, item)
+        return super().__getitem__(unique_index)
+
+
+def get_frag_pretrain_dataloader_without_split(tokenizer_, train_file, test_file, *,
+                                               batch_size=50):
+    """Load compact corpora and split test by unique fragment for validation."""
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError('batch_size must be a positive integer')
+    train = FragPretrainDataSet(train_file, tokenizer_)
+    full_test = FragPretrainDataSet(test_file, tokenizer_)
+    if not len(train):
+        raise ValueError('No usable fragment-pretraining samples')
+    if train.unknown_tokens:
+        raise ValueError('Training tokens absent from vocabulary; rebuild the matching tokenizer')
+    if len(full_test.row_ids) < 2:
+        raise ValueError('At least two unique test fragments are required for validation/test splitting')
+    order = torch.randperm(len(full_test.row_ids), generator=torch.Generator().manual_seed(42)).tolist()
+    boundary = len(order) // 2
+    valid_keys = [full_test.row_ids[i] for i in order[:boundary]]
+    test_keys = [full_test.row_ids[i] for i in order[boundary:]]
+    valid = FragPretrainDataSet(test_file, tokenizer_, row_keys=valid_keys)
+    test = FragPretrainDataSet(test_file, tokenizer_, row_keys=test_keys)
+    print(f'Fragment pretrain train={len(train)} ({len(train.row_ids)} unique), '
+          f'validation={len(valid)} ({len(valid.row_ids)} unique), '
+          f'test={len(test)} ({len(test.row_ids)} unique), '
+          f'length-filtered={len(train.skipped_rows) + len(full_test.skipped_rows)}, '
+          f'test unknown tokens={full_test.unknown_tokens}')
+    return (
+        [DataLoader(train, batch_size=batch_size, shuffle=True, collate_fn=train.padding_batch)],
+        [DataLoader(valid, batch_size=batch_size, shuffle=False, collate_fn=valid.padding_batch)],
+        [DataLoader(test, batch_size=batch_size, shuffle=False, collate_fn=test.padding_batch)],
+    )
 
 
 def load_protein_emb(pkl_file_path='gpt/protein2vector.pkl'):
