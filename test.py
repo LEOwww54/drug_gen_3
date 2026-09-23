@@ -4,7 +4,26 @@ from rdkit import Chem
 
 from decompose.molConn import gen2mol
 
-if "__main__" == __name__:
+def patest(file):
+    with open(file, 'rb') as f:
+        data = pickle.load(f)
+        frags = [i['frag'].split(' ') for k, i in data['mol'].items()]
+
+        error = []
+
+        for frag in frags:
+            count = 0
+            for token in frag:
+                if token=='(':
+                    count += 1
+                if token==')':
+                    count -= 1
+            if not count == 0:
+                error.append(frag)
+
+        print(error)
+
+def test1():
     with open('stru_data_ZINC_250K_pamf_train.json', 'r') as f:
         stru_data = json.load(f)
         stru_data = list(stru_data['pamf'].keys())
@@ -23,3 +42,6 @@ if "__main__" == __name__:
 
     print(len(new))
     print(new)
+
+if "__main__" == __name__:
+    patest('gpt/frag_file/frag_decom_ZINC_250K_pamf_train.pkl')

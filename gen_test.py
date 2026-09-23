@@ -68,8 +68,8 @@ def gpt_test(path, n=0, method='top_k', save='smiles_generation_test.txt', batch
 
 
 if __name__ == '__main__':
-    data, answers = gpt_test(n=100, path='checkpoints/fragGPT/ZINC_250K_pamf/unconditional_Riemannian_2026-09-21_14-11-58', method='temperature',
-             save='gen/pR_1_1', batch=20, prop=[0.7, 2, 0.7], conditional=('unconditional', ), protein=None, arg=0.7, pocket=[],
+    data, answers = gpt_test(n=1000, path='checkpoints/fragGPT/ZINC_250K_pamf/prop_Riemannian_2026-09-22_10-39-42', method='temperature',
+             save='gen/pR_1_1', batch=20, prop=[0.8, 1.6, 0.8], conditional=('prop', ), protein=None, arg=0.7, pocket=[],
              p_type='Riemannian')
 
     print(answers)

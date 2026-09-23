@@ -199,8 +199,7 @@ def train_fragGPT_ZINC_refined_prop_Riemmanian(epoch, s, s1, checkpoint_dir=None
 if __name__ == '__main__':
     ## md_test()
     # train_fragGPT_chembl_unconditional_lora_1(2, True, False)
-    #train_fragGPT_ZINC_250K_prop_Riemmanian(5, True, False)
-    train_fragGPT_ZINC_250K_pamf(80, True, batch_size=50, lr=9e-5, conditional=('unconditional',))
+    train_fragGPT_ZINC_250K_pamf(80, True, batch_size=50, lr=6e-5, conditional=('prop',), checkpoint_dir='checkpoints/fragGPT/ZINC_250K_pamf/unconditional_Riemannian_2026-09-21_23-58-18')
     # train_fragGPT_ZINC_refined_pamf(20, True, batch_size=50, lr=8e-5)
 
 
